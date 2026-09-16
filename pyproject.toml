@@ -1,0 +1,27 @@
+[project]
+name = "omnidamus"
+version = "0.1.0"
+description = "Omnichannel conversational relay agent for the AWS CDS Agentic AI Partner Hackathon"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.35",
+    "strands-agents",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.7",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "moto>=5.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

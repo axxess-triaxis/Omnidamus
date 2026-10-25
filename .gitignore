@@ -27,3 +27,7 @@ dist/
 # Outputs
 outputs/
 *.log
+
+# SAM
+.aws-sam/
+samconfig.toml

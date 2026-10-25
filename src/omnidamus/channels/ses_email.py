@@ -34,18 +34,25 @@ def send_email(
             "No from_address given and OMNIDAMUS_SES_FROM_ADDRESS is unset"
         )
 
+    kwargs: dict = {
+        "FromEmailAddress": sender,
+        "Destination": {"ToAddresses": [to_address]},
+        "Content": {
+            "Simple": {
+                "Subject": {"Data": subject, "Charset": "UTF-8"},
+                "Body": {"Text": {"Data": body_text, "Charset": "UTF-8"}},
+            }
+        },
+    }
+    # Replies go to the SES receiving address, so the customer can answer the
+    # receipt and the conversation continues by email.
+    reply_to = os.environ.get("OMNIDAMUS_SES_REPLY_TO")
+    if reply_to:
+        kwargs["ReplyToAddresses"] = [reply_to]
+
     client = boto3.client("sesv2", region_name=region_name or os.environ.get("AWS_REGION"))
     try:
-        response = client.send_email(
-            FromEmailAddress=sender,
-            Destination={"ToAddresses": [to_address]},
-            Content={
-                "Simple": {
-                    "Subject": {"Data": subject, "Charset": "UTF-8"},
-                    "Body": {"Text": {"Data": body_text, "Charset": "UTF-8"}},
-                }
-            },
-        )
+        response = client.send_email(**kwargs)
     except ClientError as exc:
         raise SesSendError(f"SES send_email failed: {exc}") from exc
 

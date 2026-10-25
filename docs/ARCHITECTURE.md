@@ -1,77 +1,91 @@
 # Omnidamus architecture
 
-Status: describes the code as scaffolded, not a deployed or field-tested system.
-No AWS resource in this diagram has actually been provisioned yet (see the main
+Status: describes the code and the SAM template in this repo. The stack has not
+been deployed yet and no live message has been exchanged (see the main
 [README](../README.md) Status section).
 
-## Reference flow
+## Flow
 
 ```mermaid
 flowchart LR
-    subgraph Intake
-        SMS_IN[AWS End User Messaging\nSMS/RCS inbound]
-        WA_IN[AWS End User Messaging Social\nWhatsApp inbound]
+    OP[Operator<br/>scripts/start_conversation.py] -->|lambda:Invoke| FN
+
+    subgraph Customer
+        PHONE[Customer phone]
+        INBOX[Customer inbox]
     end
 
-    SMS_IN --> NORM[InboundMessage\nschema.py]
-    WA_IN --> NORM
+    PHONE -->|SMS| EUMSMS[AWS End User Messaging SMS]
+    PHONE -->|WhatsApp| EUMS[AWS End User Messaging Social]
+    INBOX -->|email reply| SESIN[Amazon SES receiving]
+    EUMSMS -->|two-way SMS| T1[SNS: SMS inbound]
+    EUMS -->|messages + delivery receipts| T2[SNS: WhatsApp inbound]
+    SESIN -->|receipt rule| T3[SNS: email inbound]
+    T1 --> FN
+    T2 --> FN
+    T3 --> FN
 
-    NORM --> AGENT[Strands Agent on Bedrock\nagent.py]
-    AGENT -->|structured_output_model=RoutingDecision| DECISION{RoutingDecision}
-
-    DECISION -->|reply_channel| ROUTER[router.py\ndispatch_reply]
-    DECISION -->|handoff_to set| HANDOFF[router.py\ndispatch_handoff]
-
-    ROUTER --> SMS_OUT[AWS End User Messaging\nSMS/RCS]
-    ROUTER --> WA_OUT[AWS End User Messaging Social\nWhatsApp]
-    ROUTER --> SES_OUT[Amazon SES]
-
-    HANDOFF --> WA_OUT
-    HANDOFF --> SES_OUT
-
-    subgraph Deploy["AWS Lambda (web.py via mangum)"]
-        AGENT
-        ROUTER
-        HANDOFF
+    subgraph FN[AWS Lambda: Omnidamus]
+        VERIFY[sns_verify.py<br/>topic allowlist + signature] --> PARSE[inbound.py]
+        PARSE --> LOOP[service.py<br/>opt-out, channel rules, receipts]
+        LOOP <-->|history, facts, status| DDB[(DynamoDB<br/>conversations)]
+        LOOP -->|prompt with history| AGENT[agent.py<br/>Strands on Amazon Bedrock]
+        AGENT -->|RoutingDecision| LOOP
     end
+
+    LOOP -->|SendTextMessage| EUMSMS
+    LOOP -->|SendWhatsAppMessage<br/>text or template| EUMS
+    LOOP -->|SendEmail| SES[Amazon SES]
+    EUMSMS --> PHONE
+    EUMS --> PHONE
+    SES --> INBOX
+    FN -. failed invocations .-> DLQ[SQS dead-letter queue]
+    DLQ -. alarm .-> CW[CloudWatch alarms]
 ```
 
-## The cross-channel handoff pattern
+## Reference scenario
 
-The hackathon brief's central ask -- "a conversation starts in one channel and
-completes an action in another" -- is implemented as two independent fields on
-`RoutingDecision` (`schema.py`), deliberately kept separate from `reply_channel`:
+1. The operator opens a conversation, either with an **SMS/RCS** notification or a
+   Meta-approved **WhatsApp template** (the only way a business can start a
+   WhatsApp chat).
+2. The customer replies. EUM SMS or EUM Social publishes the reply to SNS; the
+   function verifies the signature, parses it, and loads the conversation from
+   DynamoDB.
+3. The agent reads the history and decides where the conversation goes next. A
+   move to WhatsApp outside its 24-hour window becomes an approved template, or a
+   click-to-chat link on the current channel.
+4. When the agent marks the conversation complete, the closing receipt goes out by
+   **Amazon SES**, once, to the address on file. Its Reply-To is the SES receiving
+   address, so if the customer answers it, the reply comes back through
+   **SES receiving** into the same conversation.
 
-- `reply_channel` / `reply_text`: what to send back right now, on whichever
-  channel the current message arrived on (or the channel a prior handoff moved
-  the conversation to).
-- `handoff_to`: set only when the conversation should move to a *different*
-  channel next. `router.dispatch_handoff` sends a short notice on the new
-  channel; the next real message the user sends there re-enters the same
-  agent loop as a new `InboundMessage` on that channel.
+## Design choices
 
-Reference scenario end-to-end:
+- **The model decides, plain code acts.** The agent returns a typed
+  `RoutingDecision` (Strands structured output); `service.py` applies the channel
+  rules and does the sending. The agent never calls a send API itself.
+- **Compliance is not left to the model.** STOP/UNSUBSCRIBE on any channel ends all
+  contact before the agent sees the message, and START opts back in. WhatsApp's
+  24-hour rule is enforced in code.
+- **No public endpoint.** Inbound arrives on SNS and is signature-checked; the
+  conversation is opened by a direct Lambda invocation that needs IAM permission.
+  `web.py` is local-only.
+- **One conversation per customer.** It is keyed by phone number, so moving
+  between SMS and WhatsApp keeps the same conversation. Email finds it through a
+  pointer from the sender's address. Email from an unknown address never starts a
+  conversation.
+- **A fresh agent per message.** Strands agents keep their own chat history;
+  reusing one would leak conversations into each other. The real history comes
+  from DynamoDB.
+- **At-least-once tolerant.** SNS redeliveries are dropped by provider message ID;
+  concurrent writes to one conversation are caught by a version check and retried.
+- **Wiring is scripted, not clicked.** `scripts/connect_inbound.py` sets the event
+  destinations through the AWS APIs, dry-run first. It never replaces another SES
+  rule set without an explicit flag.
 
-1. An AWS End User Messaging (SMS/RCS) notification goes out (e.g. "your pickup
-   is ready — reply to schedule a time").
-2. The user's reply is normalized to an `InboundMessage` on `Channel.SMS_RCS`.
-   The agent judges the request needs real back-and-forth and sets
-   `handoff_to=Channel.WHATSAPP`.
-3. Further exchange happens on WhatsApp as ordinary `InboundMessage`s on
-   `Channel.WHATSAPP`.
-4. Once the agent sets `conversation_complete=true`, a caller (not yet built --
-   see README Status) sends the final written receipt via Amazon SES.
+## Not built
 
-## What is not yet built
-
-- Step 4 above (an explicit "send closing receipt on conversation_complete"
-  caller) — `web.py`'s `/inbound/{channel}` endpoint currently dispatches a
-  reply and an optional handoff notice, but does not yet act on
-  `conversation_complete` itself.
-- Conversation state persistence — nothing currently stores which channel a
-  conversation is "on" between messages; `conversation_id` exists in the schema
-  but nothing reads or writes it yet.
-- Provider webhook signature verification for WhatsApp/EUM inbound.
-- Rich RCS content (`send_rich_rcs_message` in `channels/sms_rcs.py` is an
-  intentional `NotImplementedError` — its payload schema has not been verified
-  against AWS documentation yet).
+- Rich RCS content (`send_rich_rcs_message` is an intentional
+  `NotImplementedError`; its payload schema has not been verified against AWS
+  documentation).
+- Inbound media (images, documents, location) is ignored.

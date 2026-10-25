@@ -27,6 +27,10 @@ class Recorder:
         self.emails.append((to, subject, body_text))
         return f"ses-{len(self.emails)}"
 
+    def send_template(self, to, name, language_code="en", body_parameters=None):
+        self.sent.append((Channel.WHATSAPP, to, f"template:{name}:{body_parameters}"))
+        return f"wamid.out{len(self.sent)}"
+
 
 def _msg(channel, body, mid, at=NOW):
     return InboundMessage(conversation_id=PHONE, channel=channel, from_address=PHONE,
@@ -42,7 +46,8 @@ def _run(store, rec, message, decision, now=NOW):
         return decision
 
     result = service.handle_inbound(message, store, route=route, send=rec.send,
-                                    send_email=rec.send_email, now=now)
+                                    send_email=rec.send_email, send_template=rec.send_template,
+                                    now=now)
     return result, seen
 
 
@@ -52,8 +57,8 @@ def rec():
 
 
 def test_start_conversation_sends_sms_and_saves(store, rec):
-    out = service.start_conversation(PHONE, "Your pickup is ready. Reply to pick a time.",
-                                     store, email="cust@example.com", context="pickup", send=rec.send)
+    out = service.start_conversation(PHONE, store, notification="Your pickup is ready. Reply to pick a time.",
+                                     email="cust@example.com", context="pickup", send=rec.send)
     assert rec.sent == [(Channel.SMS_RCS, PHONE, "Your pickup is ready. Reply to pick a time.")]
     state = store.get(PHONE)
     assert state.customer_email == "cust@example.com"
@@ -62,7 +67,7 @@ def test_start_conversation_sends_sms_and_saves(store, rec):
 
 
 def test_reply_on_same_channel_and_history_passed_to_agent(store, rec):
-    service.start_conversation(PHONE, "Pickup ready", store, context="pickup", send=rec.send)
+    service.start_conversation(PHONE, store, notification="Pickup ready", context="pickup", send=rec.send)
     decision = RoutingDecision(summary="asks time", reply_channel=Channel.SMS_RCS, reply_text="What time?")
     _, seen = _run(store, rec, _msg(Channel.SMS_RCS, "ok", "sms-1"), decision)
 
@@ -153,3 +158,112 @@ def test_new_message_after_completion_reopens(store, rec):
     result, _ = _run(store, rec, _msg(Channel.SMS_RCS, "one more thing", "sms-2"), again)
     assert result["status"] == "open"
     assert store.get(PHONE).receipt_message_id is None
+
+
+# --- opt-out ---------------------------------------------------------------
+
+def _never_route(*_):
+    raise AssertionError("agent must not be called")
+
+
+def test_stop_opts_out_and_silences_later_messages(store, rec):
+    result, _ = _run(store, rec, _msg(Channel.WHATSAPP, "STOP", "wamid.1"), None)
+    assert result["status"] == "opted_out"
+    assert rec.sent[-1] == (Channel.WHATSAPP, PHONE, service.OPT_OUT_CONFIRMATION)
+
+    result = service.handle_inbound(_msg(Channel.WHATSAPP, "hello?", "wamid.2"), store,
+                                    route=_never_route, send=rec.send, now=NOW)
+    assert result["skipped"] == "opted_out"
+    assert len(rec.sent) == 1
+
+
+def test_sms_stop_sends_no_confirmation_of_our_own(store, rec):
+    _run(store, rec, _msg(Channel.SMS_RCS, "Stop.", "sms-1"), None)
+    assert rec.sent == []
+    assert store.get(PHONE).opted_out
+
+
+def test_start_opts_back_in(store, rec):
+    _run(store, rec, _msg(Channel.WHATSAPP, "unsubscribe", "wamid.1"), None)
+    result, _ = _run(store, rec, _msg(Channel.WHATSAPP, "START", "wamid.2"), None)
+    assert result["status"] == "opted_in"
+    assert not store.get(PHONE).opted_out
+
+
+def test_cannot_start_conversation_with_opted_out_customer(store, rec):
+    _run(store, rec, _msg(Channel.WHATSAPP, "stop", "wamid.1"), None)
+    out = service.start_conversation(PHONE, store, notification="hi", send=rec.send)
+    assert out["skipped"] == "opted_out"
+
+
+# --- WhatsApp templates ----------------------------------------------------
+
+def test_whatsapp_first_conversation_opens_with_template(store, rec):
+    out = service.start_conversation(PHONE, store, channel=Channel.WHATSAPP,
+                                     template="demo_request", template_params=["Asha"],
+                                     send=rec.send, send_template=rec.send_template)
+    assert rec.sent == [(Channel.WHATSAPP, PHONE, "template:demo_request:['Asha']")]
+    state = store.get(PHONE)
+    assert state.current_channel is Channel.WHATSAPP
+    assert state.turns[0].provider_message_id == out["message_id"]
+
+
+def test_whatsapp_start_without_template_is_refused(store, rec):
+    with pytest.raises(ValueError):
+        service.start_conversation(PHONE, store, channel=Channel.WHATSAPP, send=rec.send)
+
+
+def test_handoff_uses_template_when_configured(store, rec, monkeypatch):
+    monkeypatch.setenv("OMNIDAMUS_WHATSAPP_HANDOFF_TEMPLATE", "continue_on_whatsapp")
+    decision = RoutingDecision(summary="move", reply_channel=Channel.SMS_RCS,
+                               reply_text="Let's move to WhatsApp", handoff_to=Channel.WHATSAPP)
+    _run(store, rec, _msg(Channel.SMS_RCS, "need help", "sms-1"), decision)
+    assert rec.sent[-1] == (Channel.WHATSAPP, PHONE, "template:continue_on_whatsapp:None")
+    assert store.get(PHONE).current_channel is Channel.WHATSAPP
+
+
+# --- inbound email ---------------------------------------------------------
+
+def _email(body, mid="ses-in-1", sender="cust@example.com"):
+    return InboundMessage(conversation_id="", channel=Channel.EMAIL, from_address=sender,
+                          body=body, provider_message_id=mid, received_at=NOW)
+
+
+def test_email_reply_continues_the_phone_conversation(store, rec):
+    service.start_conversation(PHONE, store, notification="Pickup ready",
+                               email="cust@example.com", send=rec.send)
+    decision = RoutingDecision(summary="moved", reply_channel=Channel.EMAIL, reply_text="Moved to 4pm")
+    result, seen = _run(store, rec, _email("Can we make it 4pm?"), decision)
+    assert result["conversation_id"] == PHONE
+    assert seen["state"].turns[-1].channel is Channel.EMAIL
+    assert rec.sent[-1] == (Channel.EMAIL, "cust@example.com", "Moved to 4pm")
+
+
+def test_email_from_unknown_sender_is_dropped(store, rec):
+    result = service.handle_inbound(_email("hello", sender="stranger@example.com"), store,
+                                    route=_never_route, send=rec.send, now=NOW)
+    assert result == {"skipped": "unknown_sender"}
+
+
+def test_email_given_in_chat_links_for_later_replies(store, rec):
+    decision = RoutingDecision(summary="s", reply_channel=Channel.WHATSAPP, reply_text="Noted",
+                               key_facts={"email": "Cust@Example.com"})
+    _run(store, rec, _msg(Channel.WHATSAPP, "my email is Cust@Example.com", "wamid.1"), decision)
+    assert store.find_by_email("cust@example.com") == PHONE
+
+
+# --- delivery receipts -----------------------------------------------------
+
+def test_whatsapp_status_updates_outbound_turn(store, rec):
+    out = service.start_conversation(PHONE, store, channel=Channel.WHATSAPP, template="demo_request",
+                                     send=rec.send, send_template=rec.send_template)
+    status = {"conversation_id": PHONE, "provider_message_id": out["message_id"],
+              "status": "read", "errors": []}
+    assert service.apply_whatsapp_status(status, store) is True
+    assert store.get(PHONE).turns[0].status == "read"
+
+
+def test_status_for_unknown_message_is_ignored(store):
+    status = {"conversation_id": PHONE, "provider_message_id": "wamid.none",
+              "status": "failed", "errors": [{"code": 131047}]}
+    assert service.apply_whatsapp_status(status, store) is False

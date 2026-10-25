@@ -80,3 +80,69 @@ def test_whatsapp_and_sms_from_same_person_share_a_conversation():
 def test_not_a_phone_number():
     with pytest.raises(ValueError):
         normalize_phone("abc")
+
+
+# --- WhatsApp delivery receipts ---------------------------------------------
+
+def test_whatsapp_statuses_are_parsed():
+    from omnidamus.inbound import parse_whatsapp_statuses
+
+    event = _wa_event({"statuses": [{"id": "wamid.X", "status": "failed", "recipient_id": "01234567890",
+                                     "errors": [{"code": 131047, "title": "Re-engagement message"}]}]})
+    [status] = parse_whatsapp_statuses(event)
+    assert status == {"conversation_id": "+01234567890", "provider_message_id": "wamid.X",
+                      "status": "failed", "errors": [{"code": 131047, "title": "Re-engagement message"}]}
+
+
+# --- SES receiving -----------------------------------------------------------
+
+RAW_REPLY = (
+    "From: Asha Rao <asha@example.com>\r\n"
+    "To: replies@omnidamus.example\r\n"
+    "Subject: Re: Confirmation\r\n"
+    "Content-Type: text/plain; charset=UTF-8\r\n\r\n"
+    "Can we move it to 4pm?\r\n\r\n"
+    "On Fri, 24 Oct 2026 at 10:00, Omnidamus <noreply@example.com> wrote:\r\n"
+    "> Booked for 3pm.\r\n"
+)
+
+
+def _ses(content=RAW_REPLY, spam="PASS", virus="PASS"):
+    return json.dumps({
+        "notificationType": "Received",
+        "mail": {"source": "bounce@example.com", "messageId": "o3vrnil0e2ic28trm7dfhrc2v0clambda4nbp0g81",
+                 "commonHeaders": {"from": ["Asha Rao <asha@example.com>"], "subject": "Re: Confirmation"}},
+        "receipt": {"spamVerdict": {"status": spam}, "virusVerdict": {"status": virus},
+                    "action": {"type": "SNS", "topicArn": "arn:aws:sns:us-east-1:123456789012:email"}},
+        "content": content,
+    })
+
+
+def test_ses_reply_keeps_only_new_text():
+    from omnidamus.inbound import parse_ses_event
+
+    [msg] = parse_ses_event(_ses())
+    assert msg.channel is Channel.EMAIL
+    assert msg.from_address == "asha@example.com"
+    assert msg.body == "Can we move it to 4pm?"
+    assert msg.provider_message_id == "o3vrnil0e2ic28trm7dfhrc2v0clambda4nbp0g81"
+
+
+@pytest.mark.parametrize("spam,virus", [("FAIL", "PASS"), ("PASS", "FAIL")])
+def test_ses_spam_or_virus_is_dropped(spam, virus):
+    from omnidamus.inbound import parse_ses_event
+
+    assert parse_ses_event(_ses(spam=spam, virus=virus)) == []
+
+
+def test_ses_multipart_uses_plain_part():
+    from omnidamus.inbound import parse_ses_event
+
+    raw = (
+        "From: asha@example.com\r\nSubject: hi\r\nMIME-Version: 1.0\r\n"
+        "Content-Type: multipart/alternative; boundary=b1\r\n\r\n"
+        "--b1\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nPlain body\r\n"
+        "--b1\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n<p>Html body</p>\r\n--b1--\r\n"
+    )
+    [msg] = parse_ses_event(_ses(content=raw))
+    assert msg.body == "Plain body"

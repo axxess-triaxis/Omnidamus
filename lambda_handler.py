@@ -3,13 +3,14 @@
 Two kinds of event reach this function, and no public HTTP endpoint is needed for
 either:
 
-1. SNS records from the two inbound topics -- AWS End User Messaging Social
-   (WhatsApp) and AWS End User Messaging SMS (two-way SMS). Every record is checked
-   before it is parsed: its TopicArn must be one of the two configured topics and
-   its SNS signature must verify (sns_verify.py).
+1. SNS records from the three inbound topics -- AWS End User Messaging Social
+   (WhatsApp messages and delivery receipts), AWS End User Messaging SMS (two-way
+   SMS) and Amazon SES receiving (email). Every record is checked before it is
+   parsed: its TopicArn must be one of the configured topics and its SNS signature
+   must verify (sns_verify.py).
 2. A direct invocation {"action": "start_conversation", ...} to open a conversation
-   with an outbound SMS/RCS notification. Only callers with lambda:InvokeFunction
-   on this function can send it (see scripts/start_conversation.py).
+   with an SMS/RCS notification or a WhatsApp template. Only callers with
+   lambda:InvokeFunction on this function can send it (scripts/start_conversation.py).
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import logging
 import os
 
 from omnidamus import inbound, service, sns_verify
+from omnidamus.schema import Channel
 from omnidamus.state import ConversationStore
 
 logging.getLogger().setLevel(logging.INFO)
@@ -35,10 +37,20 @@ def _get_store() -> ConversationStore:
 
 
 def _topics() -> dict[str, str]:
-    return {
+    topics = {
         os.environ.get("OMNIDAMUS_WHATSAPP_TOPIC_ARN", ""): "whatsapp",
         os.environ.get("OMNIDAMUS_SMS_TOPIC_ARN", ""): "sms",
+        os.environ.get("OMNIDAMUS_EMAIL_TOPIC_ARN", ""): "email",
     }
+    topics.pop("", None)
+    return topics
+
+
+_PARSERS = {
+    "whatsapp": "parse_whatsapp_event",
+    "sms": "parse_sms_event",
+    "email": "parse_ses_event",
+}
 
 
 def _handle_sns_record(record: dict) -> list[dict]:
@@ -47,21 +59,27 @@ def _handle_sns_record(record: dict) -> list[dict]:
     sns_verify.verify(sns, allowed_topic_arns=topics.keys())
 
     kind = topics[sns["TopicArn"]]
-    parse = inbound.parse_whatsapp_event if kind == "whatsapp" else inbound.parse_sms_event
     results = []
-    for message in parse(sns["Message"]):
+    for message in getattr(inbound, _PARSERS[kind])(sns["Message"]):
         results.append(service.handle_inbound(message, _get_store()))
+    if kind == "whatsapp":
+        for status in inbound.parse_whatsapp_statuses(sns["Message"]):
+            service.apply_whatsapp_status(status, _get_store())
     return results
 
 
 def handler(event: dict, context=None) -> dict:
     if event.get("action") == "start_conversation":
+        channel = Channel(event.get("channel", Channel.SMS_RCS.value))
         return service.start_conversation(
             phone=inbound.normalize_phone(event["phone"]),
-            notification=event["notification"],
             store=_get_store(),
+            notification=event.get("notification"),
             email=event.get("email"),
             context=event.get("context", ""),
+            channel=channel,
+            template=event.get("template"),
+            template_params=event.get("template_params"),
         )
 
     records = [r for r in event.get("Records", []) if r.get("EventSource") == "aws:sns"]

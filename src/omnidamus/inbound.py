@@ -15,7 +15,11 @@ Payload shapes are taken from AWS's own documentation:
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
+from email import message_from_string
+from email import policy as email_policy
+from email.utils import parseaddr
 
 from .schema import Channel, InboundMessage
 
@@ -77,6 +81,88 @@ def _whatsapp_text(msg: dict) -> str | None:
         reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
         return reply.get("title")
     return None
+
+
+def parse_whatsapp_statuses(sns_message: str) -> list[dict]:
+    """Delivery receipts (sent / delivered / read / failed) in one EUM Social event,
+    from changes[].value.statuses[]."""
+
+    event = json.loads(sns_message)
+    entry = event.get("whatsAppWebhookEntry")
+    if isinstance(entry, str):
+        entry = json.loads(entry)
+    if not entry:
+        return []
+
+    statuses = []
+    for change in entry.get("changes", []):
+        for status in change.get("value", {}).get("statuses", []):
+            if not status.get("id") or not status.get("recipient_id"):
+                continue
+            statuses.append({
+                "conversation_id": normalize_phone(status["recipient_id"]),
+                "provider_message_id": status["id"],
+                "status": status.get("status", "unknown"),
+                "errors": status.get("errors", []),
+            })
+    return statuses
+
+
+def parse_ses_event(sns_message: str) -> list[InboundMessage]:
+    """An email received by Amazon SES through a receipt rule's SNS action
+    ("Contents of notifications for Amazon SES email receiving"). Mail that SES
+    scored as spam or virus is dropped. `conversation_id` is left empty: the sender
+    is identified by email address, which the service maps to a conversation."""
+
+    notification = json.loads(sns_message)
+    if notification.get("notificationType") != "Received":
+        return []
+    receipt = notification.get("receipt", {})
+    for verdict in ("spamVerdict", "virusVerdict"):
+        if receipt.get(verdict, {}).get("status") == "FAIL":
+            return []
+
+    mail = notification.get("mail", {})
+    sender = _sender_address(mail)
+    body = _reply_text(notification.get("content", ""))
+    if not sender or not body:
+        return []
+    return [
+        InboundMessage(
+            conversation_id="",
+            channel=Channel.EMAIL,
+            from_address=sender,
+            body=body,
+            provider_message_id=mail.get("messageId"),
+        )
+    ]
+
+
+def _sender_address(mail: dict) -> str | None:
+    headers_from = mail.get("commonHeaders", {}).get("from") or []
+    candidate = headers_from[0] if headers_from else mail.get("source", "")
+    _, address = parseaddr(candidate)
+    return address.lower() or None
+
+
+_QUOTE_START = re.compile(r"^On .+wrote:\s*$|^-{2,}\s*Original Message\s*-{2,}", re.IGNORECASE)
+
+
+def _reply_text(raw_mime: str) -> str:
+    """The new text of a reply: the first text/plain part, cut at the quoted
+    original ("On ... wrote:", "-----Original Message-----", or '>' lines)."""
+
+    if not raw_mime:
+        return ""
+    message = message_from_string(raw_mime, policy=email_policy.default)
+    part = message.get_body(preferencelist=("plain",))
+    text = part.get_content() if part is not None else ""
+    lines = []
+    for line in text.splitlines():
+        if _QUOTE_START.match(line.strip()) or line.lstrip().startswith(">"):
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def parse_sms_event(sns_message: str) -> list[InboundMessage]:

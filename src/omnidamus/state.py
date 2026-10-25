@@ -39,6 +39,8 @@ class Turn(BaseModel):
     channel: Channel
     text: str
     at: datetime = Field(default_factory=_now)
+    provider_message_id: str | None = None
+    status: str | None = None  # WhatsApp delivery status: sent / delivered / read / failed
 
 
 class ConversationState(BaseModel):
@@ -53,13 +55,30 @@ class ConversationState(BaseModel):
     processed_message_ids: list[str] = Field(default_factory=list)
     last_whatsapp_inbound_at: datetime | None = None
     receipt_message_id: str | None = None
+    opted_out: bool = False
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
     version: int = 0
 
-    def add_turn(self, direction: str, channel: Channel, text: str) -> None:
-        self.turns.append(Turn(direction=direction, channel=channel, text=text))
+    def add_turn(
+        self,
+        direction: str,
+        channel: Channel,
+        text: str,
+        provider_message_id: str | None = None,
+    ) -> None:
+        self.turns.append(
+            Turn(direction=direction, channel=channel, text=text,
+                 provider_message_id=provider_message_id)
+        )
         del self.turns[:-MAX_TURNS]
+
+    def set_status(self, provider_message_id: str, status: str) -> bool:
+        for turn in reversed(self.turns):
+            if turn.provider_message_id == provider_message_id:
+                turn.status = status
+                return True
+        return False
 
     def mark_processed(self, provider_message_id: str) -> None:
         self.processed_message_ids.append(provider_message_id)
@@ -120,3 +139,23 @@ class ConversationStore:
             if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 raise ConversationConflictError(state.conversation_id) from exc
             raise
+
+    # Inbound email carries an address, not a phone number. A small pointer item
+    # ("email#<address>" -> conversation_id) in the same table finds the conversation.
+
+    def link_email(self, email: str, conversation_id: str) -> None:
+        self._table.put_item(
+            Item={
+                "conversation_id": _email_key(email),
+                "points_to": conversation_id,
+                "expires_at": int(time.time()) + TTL_SECONDS,
+            }
+        )
+
+    def find_by_email(self, email: str) -> str | None:
+        item = self._table.get_item(Key={"conversation_id": _email_key(email)}).get("Item")
+        return item["points_to"] if item else None
+
+
+def _email_key(email: str) -> str:
+    return f"email#{email.strip().lower()}"

@@ -42,7 +42,11 @@ WhatsApp message; when it is closed, do not reply on WhatsApp -- hand off to Wha
 and the system will send the customer a link to start the chat.
 
 The closing receipt goes by email. Before setting conversation_complete, make sure an email \
-address is on file; if none is, ask for one first.
+address is on file; if none is, ask for one first. Customers can also reply to that email, so a \
+message may arrive on the email channel; answer it there unless another channel suits better.
+
+Opt-outs (STOP, UNSUBSCRIBE, ...) are handled before you see a message; anything you receive is \
+from a customer who is still opted in.
 
 Be concrete: pull real details out of the message rather than describing it in the abstract."""
 

@@ -28,27 +28,33 @@ same channel, hand off to a different one, or close out the conversation.
 
 ## Status
 
-Early scaffold, built fresh for this hackathon (no code shared with any other
-project). What exists right now:
+Built fresh for this hackathon (no code shared with any other project).
 
-- Pydantic schemas for conversation events and routing decisions
-  ([`schema.py`](src/omnidamus/schema.py))
-- Thin, boto3-backed wrappers for each AWS CDS channel
-  ([`channels/`](src/omnidamus/channels)) — verified against AWS's own API
-  documentation, not guessed
-- A deterministic router skeleton for cross-channel handoff
-  ([`router.py`](src/omnidamus/router.py))
-- A Strands Agents SDK / Amazon Bedrock agent skeleton
-  ([`agent.py`](src/omnidamus/agent.py))
-- A FastAPI app wiring the above together ([`web.py`](src/omnidamus/web.py))
-- Mocked unit tests for the channel wrappers and router
+**Built and covered by tests (52 passing, no AWS account needed to run them):**
+
+- Conversation memory in Amazon DynamoDB ([`state.py`](src/omnidamus/state.py)):
+  one item per customer phone number, so SMS and WhatsApp from the same person are
+  one conversation. Optimistic versioning guards concurrent writes; items expire
+  after 30 days.
+- Inbound parsing for both channels ([`inbound.py`](src/omnidamus/inbound.py)),
+  using the payload shapes in AWS's EUM Social and EUM SMS documentation.
+- SNS signature verification on every inbound record
+  ([`sns_verify.py`](src/omnidamus/sns_verify.py)): topic allowlist, HTTPS-only
+  SNS certificate URLs, SignatureVersion 1 and 2.
+- The conversation loop ([`service.py`](src/omnidamus/service.py)): the agent sees
+  the conversation's history; replies go to the right address per channel;
+  WhatsApp's 24-hour free-text window is enforced (outside it, the customer gets a
+  click-to-chat link instead); SNS redeliveries are dropped; the closing receipt is
+  sent by Amazon SES exactly once when the agent marks the conversation complete.
+- Infrastructure as code ([`template.yaml`](template.yaml), AWS SAM): DynamoDB,
+  two SNS topics with service-scoped publish policies, the Lambda function with
+  least-privilege IAM, a dead-letter queue. Passes `cfn-lint`.
 
 **Not yet done** — say so plainly rather than implying otherwise: no AWS resources
-have been provisioned (no linked WhatsApp Business Account, no RCS agent, no SES
-verified sender identity), nothing has been deployed, no live message has been sent
-or received, and the agent's reasoning prompt has not been tuned against real
-conversations. The architecture diagram, demo video, and ACE opportunity required
-for hackathon submission are also not yet done.
+have been provisioned for this project yet (no linked WhatsApp Business Account, no
+SMS number, no verified SES sender), the stack has not been deployed, no live
+message has been sent or received, and the agent's prompt has not been tuned
+against real conversations. The demo video and the Devpost submission are not done.
 
 ## AWS CDS services used
 
@@ -72,6 +78,41 @@ pytest
 
 AWS credentials resolve via the normal boto3 chain (`aws configure` / env vars) —
 none are stored in this repo.
+
+## Deploy
+
+One-time provisioning in the AWS console (same region as the stack):
+
+1. **AWS End User Messaging Social:** link a WhatsApp Business Account and phone
+   number. Use a test number, not a production one.
+2. **AWS End User Messaging SMS:** get a phone number that supports two-way SMS in
+   the customer's country.
+3. **Amazon SES:** verify the sender identity. In the SES sandbox, also verify each
+   recipient address.
+4. **Amazon Bedrock:** make sure the model in `BedrockModelId` is enabled.
+
+Then build and deploy (needs Docker and the
+[AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)):
+
+```bash
+sam build
+sam deploy --guided
+```
+
+Finally, connect the inbound side using the stack outputs:
+
+- EUM Social console → Business account → **Event destination** → Amazon SNS →
+  `WhatsAppInboundTopicArn`.
+- EUM SMS phone number → enable **two-way SMS** → destination Amazon SNS →
+  `SmsInboundTopicArn`.
+
+Start a conversation:
+
+```bash
+python scripts/start_conversation.py --function <FunctionName> --phone +14255550123 \
+  --email you@example.com --context "Order 1042 ready for pickup" \
+  --notification "Your order 1042 is ready. Reply with a pickup time."
+```
 
 ## License
 

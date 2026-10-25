@@ -28,39 +28,65 @@ same channel, hand off to a different one, or close out the conversation.
 
 ## Status
 
-Early scaffold, built fresh for this hackathon (no code shared with any other
-project). What exists right now:
+Built fresh for this hackathon (no code shared with any other project).
 
-- Pydantic schemas for conversation events and routing decisions
-  ([`schema.py`](src/omnidamus/schema.py))
-- Thin, boto3-backed wrappers for each AWS CDS channel
-  ([`channels/`](src/omnidamus/channels)) — verified against AWS's own API
-  documentation, not guessed
-- A deterministic router skeleton for cross-channel handoff
-  ([`router.py`](src/omnidamus/router.py))
-- A Strands Agents SDK / Amazon Bedrock agent skeleton
-  ([`agent.py`](src/omnidamus/agent.py))
-- A FastAPI app wiring the above together ([`web.py`](src/omnidamus/web.py))
-- Mocked unit tests for the channel wrappers and router
+**Built and covered by tests (80 passing, no AWS account needed to run them; CI runs
+them and `cfn-lint` on every PR):**
+
+- **Three two-way channels in one conversation.** SMS/RCS, WhatsApp and email all
+  arrive on SNS and land in the same conversation: one DynamoDB item per customer
+  phone number ([`state.py`](src/omnidamus/state.py)), with inbound email matched by
+  sender address. Optimistic versioning guards concurrent writes; items expire after
+  30 days.
+- **Authenticated intake.** Every inbound record passes SNS signature verification
+  ([`sns_verify.py`](src/omnidamus/sns_verify.py)): topic allowlist, HTTPS-only SNS
+  certificate URLs, SignatureVersion 1 and 2. Payloads are parsed per AWS's
+  documented EUM Social, EUM SMS and SES receiving formats
+  ([`inbound.py`](src/omnidamus/inbound.py)); spam/virus-flagged email is dropped.
+- **The conversation loop** ([`service.py`](src/omnidamus/service.py)):
+  - the agent sees the conversation's history
+  - replies go to the right address for each channel
+  - WhatsApp's 24-hour rule is enforced: outside the window, the customer gets an
+    approved template or a click-to-chat link
+  - conversations can open on WhatsApp with an approved template
+  - STOP/UNSUBSCRIBE on any channel ends all contact, and START opts back in
+  - SNS redeliveries are dropped
+  - WhatsApp delivery receipts are recorded
+  - the closing receipt goes out by SES exactly once, with Reply-To set so the
+    customer can answer by email
+- **Infrastructure as code** ([`template.yaml`](template.yaml), AWS SAM):
+  - DynamoDB, plus SNS topics for WhatsApp, SMS and email, each with a
+    service-scoped publish policy
+  - an SES receipt rule (created only if `InboundEmailAddress` is set)
+  - the Lambda function with least-privilege IAM
+  - a dead-letter queue, and CloudWatch alarms on failures and errors
+- **Post-deploy wiring** ([`scripts/connect_inbound.py`](scripts/connect_inbound.py)):
+  sets the WhatsApp event destination, enables two-way SMS and activates SES
+  receiving through the AWS APIs. It shows the plan by default and only acts with
+  `--apply`.
 
 **Not yet done** — say so plainly rather than implying otherwise: no AWS resources
-have been provisioned (no linked WhatsApp Business Account, no RCS agent, no SES
-verified sender identity), nothing has been deployed, no live message has been sent
-or received, and the agent's reasoning prompt has not been tuned against real
-conversations. The architecture diagram, demo video, and ACE opportunity required
-for hackathon submission are also not yet done.
+have been provisioned for this project yet (no linked WhatsApp Business Account, no
+SMS number, no verified SES sender), the stack has not been deployed, no live
+message has been sent or received, and the agent's prompt has not been tuned
+against real conversations. The demo video and the Devpost submission are not done.
+Rich RCS content and inbound media are not built.
 
 ## AWS CDS services used
 
-| Channel | Service | boto3 client | Key operation(s) |
+Each of these is called at runtime by the code in this repo:
+
+| Channel | Service | boto3 client | Operations called |
 |---|---|---|---|
-| Email | Amazon SES | `sesv2` | `send_email` |
-| SMS / RCS | AWS End User Messaging | `pinpoint-sms-voice-v2` | `send_text_message`, `send_rcs_message` |
-| WhatsApp | AWS End User Messaging Social | `socialmessaging` | `send_whatsapp_message` |
+| WhatsApp | AWS End User Messaging Social | `socialmessaging` | `send_whatsapp_message` (text and templates); `put_whatsapp_business_account_event_destinations` (wiring script) |
+| SMS / RCS | AWS End User Messaging | `pinpoint-sms-voice-v2` | `send_text_message`; `update_phone_number` (two-way, wiring script) |
+| Email | Amazon SES | `sesv2`, `ses` | `send_email` (receipts and email replies); receipt rule + `set_active_receipt_rule_set` (receiving) |
 
 Amazon Bedrock (via the [Strands Agents SDK](https://strandsagents.com/)) provides
 the agentic reasoning layer, per the hackathon FAQ's confirmation that Strands is an
-accepted alternative to Bedrock AgentCore.
+accepted alternative to Bedrock AgentCore. Amazon DynamoDB, Amazon SNS, AWS Lambda,
+Amazon SQS and Amazon CloudWatch carry the rest. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Setup
 
@@ -72,6 +98,50 @@ pytest
 
 AWS credentials resolve via the normal boto3 chain (`aws configure` / env vars) —
 none are stored in this repo.
+
+## Deploy
+
+One-time provisioning in the AWS console (same region as the stack):
+
+1. **AWS End User Messaging Social:** link a WhatsApp Business Account and phone
+   number (use a test number, not a production one), and get your message templates
+   approved by Meta.
+2. **AWS End User Messaging SMS** (optional): a phone number that supports two-way
+   SMS in the customer's country.
+3. **Amazon SES:** verify the sender identity. In the SES sandbox, also verify each
+   recipient address. For email replies, point the receiving domain's MX record at
+   SES inbound for the region.
+4. **Amazon Bedrock:** make sure the model in `BedrockModelId` is enabled.
+
+Build and deploy (needs Docker and the
+[AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)):
+
+```bash
+sam build
+sam deploy --guided   # set InboundEmailAddress, WhatsAppHandoffTemplate, AlarmEmail as needed
+```
+
+Connect the inbound side (dry run first, then `--apply`):
+
+```bash
+python scripts/connect_inbound.py --stack omnidamus --sms-phone-number-id <PhoneNumberId>
+python scripts/connect_inbound.py --stack omnidamus --sms-phone-number-id <PhoneNumberId> --apply
+```
+
+Start a conversation, WhatsApp-first:
+
+```bash
+python scripts/start_conversation.py --function <FunctionName> --phone +919800000000 \
+  --channel whatsapp --template demo_request --param Asha --context "Inbound lead"
+```
+
+or SMS-first:
+
+```bash
+python scripts/start_conversation.py --function <FunctionName> --phone +14255550123 \
+  --email you@example.com --context "Order 1042 ready for pickup" \
+  --notification "Your order 1042 is ready. Reply with a pickup time."
+```
 
 ## License
 

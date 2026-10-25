@@ -1,29 +1,19 @@
-"""FastAPI app wiring inbound-channel intake to the agent and router.
+"""Local development server only -- not deployed.
 
-This is intake plumbing only: it normalizes each channel's webhook payload into
-an InboundMessage, hands it to the agent, and dispatches the resulting
-RoutingDecision. Signature verification for each provider's webhook (WhatsApp's
-HMAC-SHA256 header, SNS message signing for EUM inbound, etc.) is not yet
-implemented -- do not point a real webhook at this without adding it first.
+`uvicorn omnidamus.web:app` lets you try the agent's routing decision for a single
+message without AWS inbound plumbing. It is unauthenticated and does not send
+anything or touch DynamoDB; the deployed path is lambda_handler.py, which only
+accepts signature-verified SNS records and direct invocations.
 """
 
 from __future__ import annotations
 
 from fastapi import FastAPI
 
-from .agent import build_agent, route_message
-from .router import dispatch_handoff, dispatch_reply
+from .agent import route_message
 from .schema import Channel, InboundMessage
 
-app = FastAPI(title="Omnidamus")
-_agent = None
-
-
-def _get_agent():
-    global _agent
-    if _agent is None:
-        _agent = build_agent()
-    return _agent
+app = FastAPI(title="Omnidamus (local)")
 
 
 @app.get("/health")
@@ -31,25 +21,11 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/inbound/{channel}")
-def inbound(channel: Channel, conversation_id: str, from_address: str, body: str) -> dict:
-    """Minimal, unauthenticated intake endpoint for local testing.
-
-    Real provider webhooks (WhatsApp, EUM inbound SNS) each have their own
-    payload shape and signature scheme -- adapt those into this same
-    InboundMessage call once each channel's AWS resource is provisioned.
-    """
+@app.post("/preview/{channel}")
+def preview(channel: Channel, conversation_id: str, from_address: str, body: str) -> dict:
+    """Return the agent's RoutingDecision for one message. Sends nothing."""
 
     message = InboundMessage(
         conversation_id=conversation_id, channel=channel, from_address=from_address, body=body
     )
-    decision = route_message(_get_agent(), message)
-
-    reply_id = dispatch_reply(from_address, decision)
-    handoff_id = dispatch_handoff(from_address, decision)
-
-    return {
-        "decision": decision.model_dump(),
-        "reply_message_id": reply_id,
-        "handoff_message_id": handoff_id,
-    }
+    return {"decision": route_message(message).model_dump(mode="json")}

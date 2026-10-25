@@ -65,3 +65,32 @@ def test_whatsapp_send_text_message_missing_id_raises(monkeypatch):
     monkeypatch.delenv("OMNIDAMUS_WHATSAPP_ORIGINATION_PHONE_NUMBER_ID", raising=False)
     with pytest.raises(whatsapp_social.WhatsAppSendError):
         whatsapp_social.send_text_message("+15550001111", "hello")
+
+
+def test_send_whatsapp_template_message(monkeypatch):
+    import json as _json
+
+    monkeypatch.setenv("OMNIDAMUS_WHATSAPP_ORIGINATION_PHONE_NUMBER_ID", "phone-number-id-abc")
+    with patch("boto3.client") as mock_client:
+        mock_client.return_value.send_whatsapp_message.return_value = {"messageId": "wa-t1"}
+        message_id = whatsapp_social.send_template_message(
+            "+14255550123", "demo_request", language_code="hi", body_parameters=["Asha", "AXXESS"]
+        )
+    assert message_id == "wa-t1"
+    kwargs = mock_client.return_value.send_whatsapp_message.call_args.kwargs
+    body = _json.loads(kwargs["message"])
+    assert body["type"] == "template"
+    assert body["template"]["name"] == "demo_request"
+    assert body["template"]["language"] == {"code": "hi"}
+    assert body["template"]["components"] == [
+        {"type": "body", "parameters": [{"type": "text", "text": "Asha"}, {"type": "text", "text": "AXXESS"}]}
+    ]
+
+
+def test_send_email_sets_reply_to(monkeypatch):
+    monkeypatch.setenv("OMNIDAMUS_SES_FROM_ADDRESS", "sender@example.com")
+    monkeypatch.setenv("OMNIDAMUS_SES_REPLY_TO", "replies@example.com")
+    with patch("boto3.client") as mock_client:
+        mock_client.return_value.send_email.return_value = {"MessageId": "ses-9"}
+        ses_email.send_email("to@example.com", "S", "B")
+    assert mock_client.return_value.send_email.call_args.kwargs["ReplyToAddresses"] == ["replies@example.com"]

@@ -22,6 +22,11 @@ class InboundMessage(BaseModel):
     from_address: str
     body: str
     received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    provider_message_id: str | None = Field(
+        default=None,
+        description="The channel's own ID for this message (WhatsApp wamid, SMS "
+        "inboundMessageId); used to drop SNS redeliveries",
+    )
 
 
 class RoutingDecision(BaseModel):

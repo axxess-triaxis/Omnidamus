@@ -14,6 +14,7 @@ from strands import Agent
 from strands.models import BedrockModel
 
 from .schema import InboundMessage, RoutingDecision
+from .state import ConversationState
 
 SYSTEM_PROMPT = """You are Omnidamus, an agent that carries one customer conversation across \
 multiple channels -- SMS/RCS, WhatsApp, and email -- deciding at each inbound message what \
@@ -32,7 +33,20 @@ You will be handed the text of one inbound message and which channel it arrived 
   (a confirmed time, a resolved request, an explicit decline) -- not merely when the user stops \
   responding.
 - key_facts: concrete facts actually present in the message -- names, dates, amounts, decisions \
-  -- never invented.
+  -- never invented. If the customer gives an email address, put it in key_facts["email"].
+
+You are also given the conversation so far: its purpose, the facts already known, the recent \
+turns on every channel, whether an email address is on file, and whether WhatsApp can be used \
+right now. WhatsApp only allows free-text replies within 24 hours of the customer's own last \
+WhatsApp message; when it is closed, do not reply on WhatsApp -- hand off to WhatsApp instead \
+and the system will send the customer a link to start the chat.
+
+The closing receipt goes by email. Before setting conversation_complete, make sure an email \
+address is on file; if none is, ask for one first. Customers can also reply to that email, so a \
+message may arrive on the email channel; answer it there unless another channel suits better.
+
+Opt-outs (STOP, UNSUBSCRIBE, ...) are handled before you see a message; anything you receive is \
+from a customer who is still opted in.
 
 Be concrete: pull real details out of the message rather than describing it in the abstract."""
 
@@ -50,15 +64,47 @@ def get_model() -> BedrockModel:
 
 
 def build_agent() -> Agent:
+    """A fresh agent per message. Strands agents keep their own chat history, so
+    reusing one across conversations would leak one customer's messages into
+    another's; the conversation's real history comes from DynamoDB instead."""
+
     return Agent(model=get_model(), system_prompt=SYSTEM_PROMPT)
 
 
-def route_message(agent: Agent, message: InboundMessage) -> RoutingDecision:
-    prompt = (
-        f"Channel: {message.channel.value}\n"
-        f"From: {message.from_address}\n"
-        f"Conversation ID: {message.conversation_id}\n\n"
-        f"Message:\n{message.body}"
+def build_prompt(
+    message: InboundMessage,
+    state: ConversationState | None = None,
+    whatsapp_window_open: bool = False,
+) -> str:
+    lines = [
+        f"Channel: {message.channel.value}",
+        f"From: {message.from_address}",
+        f"Conversation ID: {message.conversation_id}",
+    ]
+    if state is not None:
+        lines.append(f"Purpose: {state.context or 'not given'}")
+        lines.append(f"Email on file: {'yes' if state.customer_email else 'no'}")
+        lines.append(f"WhatsApp open for free-text replies: {'yes' if whatsapp_window_open else 'no'}")
+        if state.key_facts:
+            facts = "; ".join(f"{k}={v}" for k, v in state.key_facts.items())
+            lines.append(f"Known facts: {facts}")
+        if state.turns:
+            lines.append("\nConversation so far (oldest first):")
+            for turn in state.turns:
+                who = "Customer" if turn.direction == "inbound" else "Omnidamus"
+                lines.append(f"[{turn.channel.value}] {who}: {turn.text}")
+    lines.append(f"\nNew message:\n{message.body}")
+    return "\n".join(lines)
+
+
+def route_message(
+    message: InboundMessage,
+    state: ConversationState | None = None,
+    whatsapp_window_open: bool = False,
+) -> RoutingDecision:
+    agent = build_agent()
+    response = agent(
+        build_prompt(message, state, whatsapp_window_open),
+        structured_output_model=RoutingDecision,
     )
-    response = agent(prompt, structured_output_model=RoutingDecision)
     return response.structured_output

@@ -1,0 +1,308 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  Omnidamus - omnichannel conversational relay agent (AWS CDS Agentic AI Partner
+  Hackathon). Inbound WhatsApp (End User Messaging Social) and two-way SMS (End User
+  Messaging SMS) arrive on SNS; a Strands agent on Bedrock decides; replies go out on
+  SMS, WhatsApp or SES; conversation memory lives in DynamoDB.
+
+Parameters:
+  SesFromAddress:
+    Type: String
+    Description: Verified SES sender address used for closing receipts.
+  SesIdentity:
+    Type: String
+    Description: The verified SES identity that covers SesFromAddress (the address itself, or its domain).
+  WhatsAppPhoneNumberId:
+    Type: String
+    Description: EUM Social origination phone number ID (phone-number-id-...).
+  WhatsAppDisplayNumber:
+    Type: String
+    Default: ""
+    Description: The WhatsApp number in E.164 (e.g. +14255550123), used for click-to-chat links.
+  SmsOriginationIdentity:
+    Type: String
+    Description: EUM SMS origination identity (phone number ID or ARN, or pool ID).
+  BedrockModelId:
+    Type: String
+    Default: global.anthropic.claude-sonnet-4-6
+  InboundEmailAddress:
+    Type: String
+    Default: ""
+    Description: >-
+      Address SES receives customer email replies on (its domain needs an MX record
+      pointing at SES inbound). Leave empty to skip email receiving.
+  WhatsAppHandoffTemplate:
+    Type: String
+    Default: ""
+    Description: Approved template used to move a customer to WhatsApp outside the 24-hour window. Empty = send a click-to-chat link instead.
+  WhatsAppTemplateLanguage:
+    Type: String
+    Default: en
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: Email address for failure alarms (confirm the SNS subscription email). Empty = no subscription.
+
+Conditions:
+  ReceiveEmail: !Not [!Equals [!Ref InboundEmailAddress, ""]]
+  AlarmByEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+
+Globals:
+  Function:
+    Timeout: 90
+    MemorySize: 1024
+    Architectures: [x86_64]
+    Tracing: Active
+
+Resources:
+  ConversationsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: conversation_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: conversation_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  WhatsAppInboundTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Omnidamus WhatsApp inbound
+
+  WhatsAppInboundTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref WhatsAppInboundTopic]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowEumSocialPublish
+            Effect: Allow
+            Principal:
+              Service: social-messaging.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref WhatsAppInboundTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  SmsInboundTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Omnidamus SMS inbound
+
+  SmsInboundTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref SmsInboundTopic]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowEumSmsPublish
+            Effect: Allow
+            Principal:
+              Service: sms-voice.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref SmsInboundTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  EmailInboundTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Omnidamus email inbound
+
+  EmailInboundTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref EmailInboundTopic]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowSesReceivingPublish
+            Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref EmailInboundTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # Created inactive: an account/region has one active receipt rule set, so
+  # scripts/connect_inbound.py activates it only if none is active already.
+  InboundRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Condition: ReceiveEmail
+
+  InboundRule:
+    Type: AWS::SES::ReceiptRule
+    Condition: ReceiveEmail
+    DependsOn: EmailInboundTopicPolicy
+    Properties:
+      RuleSetName: !Ref InboundRuleSet
+      Rule:
+        Enabled: true
+        ScanEnabled: true
+        TlsPolicy: Require
+        Recipients: [!Ref InboundEmailAddress]
+        Actions:
+          - SNSAction:
+              TopicArn: !Ref EmailInboundTopic
+              Encoding: UTF-8
+
+  FailedInvocationsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  OmnidamusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt FailedInvocationsQueue.Arn
+      Environment:
+        Variables:
+          OMNIDAMUS_CONVERSATIONS_TABLE: !Ref ConversationsTable
+          OMNIDAMUS_WHATSAPP_TOPIC_ARN: !Ref WhatsAppInboundTopic
+          OMNIDAMUS_SMS_TOPIC_ARN: !Ref SmsInboundTopic
+          OMNIDAMUS_SES_FROM_ADDRESS: !Ref SesFromAddress
+          OMNIDAMUS_WHATSAPP_ORIGINATION_PHONE_NUMBER_ID: !Ref WhatsAppPhoneNumberId
+          OMNIDAMUS_WHATSAPP_DISPLAY_NUMBER: !Ref WhatsAppDisplayNumber
+          OMNIDAMUS_SMS_RCS_ORIGINATION_IDENTITY: !Ref SmsOriginationIdentity
+          OMNIDAMUS_BEDROCK_MODEL_ID: !Ref BedrockModelId
+          BEDROCK_REGION: !Ref AWS::Region
+          OMNIDAMUS_EMAIL_TOPIC_ARN: !If [ReceiveEmail, !Ref EmailInboundTopic, ""]
+          OMNIDAMUS_SES_REPLY_TO: !Ref InboundEmailAddress
+          OMNIDAMUS_WHATSAPP_HANDOFF_TEMPLATE: !Ref WhatsAppHandoffTemplate
+          OMNIDAMUS_WHATSAPP_TEMPLATE_LANGUAGE: !Ref WhatsAppTemplateLanguage
+      Events:
+        WhatsAppInbound:
+          Type: SNS
+          Properties:
+            Topic: !Ref WhatsAppInboundTopic
+        SmsInbound:
+          Type: SNS
+          Properties:
+            Topic: !Ref SmsInboundTopic
+        EmailInbound:
+          Type: SNS
+          Properties:
+            Topic: !Ref EmailInboundTopic
+      Policies:
+        - Statement:
+            - Sid: ConversationMemory
+              Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem]
+              Resource: !GetAtt ConversationsTable.Arn
+            - Sid: ClosingReceipts
+              Effect: Allow
+              Action: ses:SendEmail
+              Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesIdentity}
+            - Sid: WhatsAppReplies
+              Effect: Allow
+              Action: social-messaging:SendWhatsAppMessage
+              Resource: !Sub arn:${AWS::Partition}:social-messaging:${AWS::Region}:${AWS::AccountId}:phone-number-id/*
+            - Sid: SmsReplies
+              Effect: Allow
+              Action: sms-voice:SendTextMessage
+              Resource: !Sub arn:${AWS::Partition}:sms-voice:${AWS::Region}:${AWS::AccountId}:*
+            - Sid: AgentReasoning
+              Effect: Allow
+              Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+              Resource:
+                - !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*
+                - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/*
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: .
+      DockerTag: python3.12-v1
+
+  OmnidamusLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${OmnidamusFunction}
+      RetentionInDays: 30
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Omnidamus alarms
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: AlarmByEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  FailedInvocationsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A message could not be processed after Lambda's retries (see the dead-letter queue).
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt FailedInvocationsQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  FunctionErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The Omnidamus function raised errors.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref OmnidamusFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+Outputs:
+  FunctionName:
+    Value: !Ref OmnidamusFunction
+  ConversationsTableName:
+    Value: !Ref ConversationsTable
+  WhatsAppInboundTopicArn:
+    Description: Set this as the WhatsApp Business Account's event destination in EUM Social.
+    Value: !Ref WhatsAppInboundTopic
+  SmsInboundTopicArn:
+    Description: Set this as the two-way channel (TwoWayChannelArn) on the EUM SMS phone number.
+    Value: !Ref SmsInboundTopic
+  FailedInvocationsQueueUrl:
+    Value: !Ref FailedInvocationsQueue
+  EmailInboundTopicArn:
+    Value: !Ref EmailInboundTopic
+  InboundRuleSetName:
+    Condition: ReceiveEmail
+    Description: SES receipt rule set; scripts/connect_inbound.py activates it.
+    Value: !Ref InboundRuleSet

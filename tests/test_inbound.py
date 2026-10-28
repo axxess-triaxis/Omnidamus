@@ -94,6 +94,18 @@ def test_whatsapp_statuses_are_parsed():
                       "status": "failed", "errors": [{"code": 131047, "title": "Re-engagement message"}]}
 
 
+def test_event_outline_has_ids_and_errors_but_no_phone_numbers():
+    from omnidamus.inbound import outline_whatsapp_event
+
+    event = _wa_event({"metadata": {"display_phone_number": "12065550100"},
+                       "statuses": [{"id": "wamid.X", "status": "failed", "recipient_id": "14255550150",
+                                     "errors": [{"code": 131047}]}]})
+    outline = outline_whatsapp_event(event)
+    assert outline["aws_message_id"] == HEADER["messageId"]
+    assert outline["changes"][0]["statuses"] == [{"id": "wamid.X", "status": "failed", "errors": [{"code": 131047}]}]
+    assert "14255550150" not in json.dumps(outline) and "12065550100" not in json.dumps(outline)
+
+
 # --- SES receiving -----------------------------------------------------------
 
 RAW_REPLY = (

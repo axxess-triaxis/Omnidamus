@@ -22,10 +22,15 @@ Parameters:
     Description: The WhatsApp number in E.164 (e.g. +14255550123), used for click-to-chat links.
   SmsOriginationIdentity:
     Type: String
-    Description: EUM SMS origination identity (phone number ID or ARN, or pool ID).
+    Default: ""
+    Description: EUM SMS origination identity (phone number ID or ARN, or pool ID). Empty = SMS not set up.
   BedrockModelId:
     Type: String
     Default: global.anthropic.claude-sonnet-4-6
+  BedrockRegion:
+    Type: String
+    Default: ""
+    Description: Region to call Bedrock in. Empty = the stack's own region.
   InboundEmailAddress:
     Type: String
     Default: ""
@@ -47,6 +52,7 @@ Parameters:
 Conditions:
   ReceiveEmail: !Not [!Equals [!Ref InboundEmailAddress, ""]]
   AlarmByEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+  BedrockElsewhere: !Not [!Equals [!Ref BedrockRegion, ""]]
 
 Globals:
   Function:
@@ -187,7 +193,7 @@ Resources:
           OMNIDAMUS_WHATSAPP_DISPLAY_NUMBER: !Ref WhatsAppDisplayNumber
           OMNIDAMUS_SMS_RCS_ORIGINATION_IDENTITY: !Ref SmsOriginationIdentity
           OMNIDAMUS_BEDROCK_MODEL_ID: !Ref BedrockModelId
-          BEDROCK_REGION: !Ref AWS::Region
+          BEDROCK_REGION: !If [BedrockElsewhere, !Ref BedrockRegion, !Ref AWS::Region]
           OMNIDAMUS_EMAIL_TOPIC_ARN: !If [ReceiveEmail, !Ref EmailInboundTopic, ""]
           OMNIDAMUS_SES_REPLY_TO: !Ref InboundEmailAddress
           OMNIDAMUS_WHATSAPP_HANDOFF_TEMPLATE: !Ref WhatsAppHandoffTemplate
@@ -214,7 +220,11 @@ Resources:
             - Sid: ClosingReceipts
               Effect: Allow
               Action: ses:SendEmail
-              Resource: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesIdentity}
+              # SES also authorizes against the configuration set in use, including
+              # an identity's default configuration set.
+              Resource:
+                - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesIdentity}
+                - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/*
             - Sid: WhatsAppReplies
               Effect: Allow
               Action: social-messaging:SendWhatsAppMessage

@@ -129,6 +129,28 @@ def test_completion_sends_receipt_to_email_once(store, rec):
     assert store.get(PHONE).receipt_message_id == "ses-1"
 
 
+def test_failed_receipt_still_saves_the_turn(store, rec):
+    def failing_email(to, subject, body_text):
+        raise service.ses_email.SesSendError("AccessDenied")
+
+    decision = RoutingDecision(summary="Demo booked", reply_channel=Channel.WHATSAPP,
+                               reply_text="Confirmed for 6pm.", conversation_complete=True,
+                               key_facts={"email": "cust@example.com"})
+    message = _msg(Channel.WHATSAPP, "6pm, cust@example.com", "wamid.1")
+    result = service.handle_inbound(message, store, route=lambda *_: decision, send=rec.send,
+                                    send_email=failing_email, send_template=rec.send_template,
+                                    now=NOW)
+
+    assert result["status"] == "complete"
+    state = store.get(PHONE)
+    assert [t.text for t in state.turns] == ["6pm, cust@example.com", "Confirmed for 6pm."]
+    assert state.receipt_message_id is None
+    # A Lambda retry of the same event is dropped instead of replying twice.
+    retry, _ = _run(store, rec, message, decision)
+    assert retry["skipped"] == "duplicate"
+    assert len(rec.sent) == 1
+
+
 def test_completion_without_email_sends_no_receipt(store, rec):
     decision = RoutingDecision(summary="done", reply_channel=Channel.SMS_RCS, reply_text="Thanks",
                                conversation_complete=True)
@@ -267,3 +289,13 @@ def test_status_for_unknown_message_is_ignored(store):
     status = {"conversation_id": PHONE, "provider_message_id": "wamid.none",
               "status": "failed", "errors": [{"code": 131047}]}
     assert service.apply_whatsapp_status(status, store) is False
+
+
+def test_status_is_logged_without_phone_number(store, caplog):
+    status = {"conversation_id": PHONE, "provider_message_id": "wamid.x",
+              "status": "failed", "errors": [{"code": 131047}]}
+    with caplog.at_level("INFO", logger="omnidamus.service"):
+        service.apply_whatsapp_status(status, store)
+    [line] = [r.getMessage() for r in caplog.records if "whatsapp_status" in r.getMessage()]
+    assert '"meta_message_id": "wamid.x"' in line and "131047" in line
+    assert PHONE not in line

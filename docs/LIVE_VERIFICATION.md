@@ -127,6 +127,7 @@ conversation and sent the receipt; no calendar entry is created.
 | 27 Oct 22:00:24 | STOP | `opted_out=true` | `93bf4412-3413-4638-bd43-75e1be360859` | No |
 | 27 Oct 22:31:12 | START | `opted_out=false` | `3779c6b5-6042-4b55-9e05-e849a5668c9f` | No |
 | 28 Oct 09:35:30 | STOP | `opted_out=true` | `096c13f3-be03-4fc2-9f8e-b3ed3b76ef38` | No (error 131037) |
+| 28 Oct 15:12:11 | START | `opted_out=false` | `41337899-1ff0-4bd3-ad7e-c1358fe970bd` | No (error 131037) |
 
 The opt-out and opt-in logic worked: the flag changed each time and the agent was not
 called. The confirmation messages were accepted by AWS but never reached the phone. Meta's
@@ -136,7 +137,7 @@ status for the 28 Oct messages (logged after adding delivery-status logging on 2
 09:35:30 {"whatsapp_event": {"aws_message_id": "096c13f3-be03-4fc2-9f8e-b3ed3b76ef38", "changes": [{"field": "messages", "value_keys": ["metadata", "statuses"], "statuses": [{"id": null, "status": "failed", "errors": [{"code": 131037, "message": "(#131037) WhatsApp provided number needs display name approval before message can be sent.", ...}]}]}]}}
 ```
 
-The customer's number is **opted out** as of 28 Oct 09:35:30.
+The customer's number is **opted in** as of 28 Oct 15:12:11.
 
 ## Not verified
 
@@ -151,8 +152,11 @@ The customer's number is **opted out** as of 28 Oct 09:35:30.
 ## Open issues
 
 1. **Meta error 131037 (blocks all WhatsApp delivery since 27 Oct 21:58).** Both test
-   numbers have the display name "Sudipta Sarmah". The name needs Meta's approval in
-   WhatsApp Manager. Founder action; review time is Meta's.
+   numbers had the display name "Sudipta Sarmah". On 28 Oct the founder submitted
+   "Triaxis Ventures" with a business profile in WhatsApp Manager. Meta sent a
+   `phone_number_name_update` event at 10:29:27, but WhatsApp Manager still showed the
+   review as pending later that day, and the 15:12 reply still failed with 131037.
+   Review time is Meta's.
 2. **Delivery receipts are never recorded.** Receipts are matched on Meta's message ID,
    but turns store AWS's message ID. Status events carry AWS's ID in the top-level
    `messageId`, and failed statuses have no Meta ID at all. Not fixed.

@@ -1,0 +1,68 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Omnidamus - Route 53 hosted zone for the SES subdomain (sending and receiving).
+  The parent domain's DNS host delegates this subdomain with NS records; the parent
+  domain's own MX records are untouched.
+
+Parameters:
+  ZoneName:
+    Type: String
+    Default: reply.triaxisventures.com
+  DkimToken1:
+    Type: String
+  DkimToken2:
+    Type: String
+  DkimToken3:
+    Type: String
+
+Resources:
+  ReplyZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Ref ZoneName
+      HostedZoneConfig:
+        Comment: Omnidamus SES subdomain - delegated from the parent domain via NS records
+
+  InboundMx:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref ReplyZone
+      Name: !Ref ZoneName
+      Type: MX
+      TTL: "300"
+      ResourceRecords:
+        - !Sub 10 inbound-smtp.${AWS::Region}.amazonaws.com
+
+  Dkim1:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref ReplyZone
+      Name: !Sub ${DkimToken1}._domainkey.${ZoneName}
+      Type: CNAME
+      TTL: "1800"
+      ResourceRecords: [!Sub "${DkimToken1}.dkim.amazonses.com"]
+
+  Dkim2:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref ReplyZone
+      Name: !Sub ${DkimToken2}._domainkey.${ZoneName}
+      Type: CNAME
+      TTL: "1800"
+      ResourceRecords: [!Sub "${DkimToken2}.dkim.amazonses.com"]
+
+  Dkim3:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref ReplyZone
+      Name: !Sub ${DkimToken3}._domainkey.${ZoneName}
+      Type: CNAME
+      TTL: "1800"
+      ResourceRecords: [!Sub "${DkimToken3}.dkim.amazonses.com"]
+
+Outputs:
+  HostedZoneId:
+    Value: !Ref ReplyZone
+  NameServers:
+    Description: Add these as NS records for the subdomain at the parent domain's DNS host.
+    Value: !Join [",", !GetAtt ReplyZone.NameServers]

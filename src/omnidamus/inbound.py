@@ -83,6 +83,27 @@ def _whatsapp_text(msg: dict) -> str | None:
     return None
 
 
+def outline_whatsapp_event(sns_message: str) -> dict:
+    """A phone-number-free outline of one EUM Social event, for logging: the AWS
+    messageId, each change's field and value keys, and each status's id, status and
+    errors."""
+
+    event = json.loads(sns_message)
+    entry = event.get("whatsAppWebhookEntry")
+    if isinstance(entry, str):
+        entry = json.loads(entry)
+    changes = []
+    for change in (entry or {}).get("changes", []):
+        value = change.get("value", {})
+        changes.append({
+            "field": change.get("field"),
+            "value_keys": sorted(value),
+            "statuses": [{"id": s.get("id"), "status": s.get("status"), "errors": s.get("errors", [])}
+                         for s in value.get("statuses", [])],
+        })
+    return {"aws_message_id": event.get("messageId"), "changes": changes}
+
+
 def parse_whatsapp_statuses(sns_message: str) -> list[dict]:
     """Delivery receipts (sent / delivered / read / failed) in one EUM Social event,
     from changes[].value.statuses[]."""

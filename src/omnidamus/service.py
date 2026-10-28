@@ -20,6 +20,7 @@ cannot enforce on its own and does the sending:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -217,10 +218,17 @@ def handle_inbound(
             log.warning("Conversation %s complete but no email on file", state.conversation_id)
         else:
             subject, body = receipt_text(state, decision)
-            receipt_id = send_email(state.customer_email, subject=subject, body_text=body)
-            state.receipt_message_id = receipt_id
-            state.add_turn("outbound", Channel.EMAIL, subject, provider_message_id=receipt_id)
-            outbox.sent.append({"channel": Channel.EMAIL.value, "message_id": receipt_id})
+            try:
+                receipt_id = send_email(state.customer_email, subject=subject, body_text=body)
+            except ses_email.SesSendError:
+                # The reply has already gone out: save the turn anyway, so a Lambda
+                # retry neither loses it nor sends the reply again. receipt_message_id
+                # stays empty, so the next completion tries the receipt again.
+                log.exception("Receipt for %s not sent", state.conversation_id)
+            else:
+                state.receipt_message_id = receipt_id
+                state.add_turn("outbound", Channel.EMAIL, subject, provider_message_id=receipt_id)
+                outbox.sent.append({"channel": Channel.EMAIL.value, "message_id": receipt_id})
 
     store.save(state)
     if state.customer_email:
@@ -242,7 +250,12 @@ def apply_whatsapp_status(status: dict, store: ConversationStore) -> bool:
         log.warning("WhatsApp delivery failed for %s: %s",
                     status["provider_message_id"], status.get("errors"))
     state = store.get(status["conversation_id"])
-    if state is None or not state.set_status(status["provider_message_id"], status["status"]):
+    matched = state is not None and state.set_status(status["provider_message_id"], status["status"])
+    # No phone number here: the message ID and outcome are enough to trace a delivery.
+    log.info(json.dumps({"whatsapp_status": status["status"],
+                         "meta_message_id": status["provider_message_id"],
+                         "errors": status.get("errors", []), "matched_turn": matched}))
+    if not matched:
         return False
     store.save(state)
     return True

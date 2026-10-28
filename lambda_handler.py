@@ -63,6 +63,7 @@ def _handle_sns_record(record: dict) -> list[dict]:
     for message in getattr(inbound, _PARSERS[kind])(sns["Message"]):
         results.append(service.handle_inbound(message, _get_store()))
     if kind == "whatsapp":
+        log.info(json.dumps({"whatsapp_event": inbound.outline_whatsapp_event(sns["Message"])}))
         for status in inbound.parse_whatsapp_statuses(sns["Message"]):
             service.apply_whatsapp_status(status, _get_store())
     return results

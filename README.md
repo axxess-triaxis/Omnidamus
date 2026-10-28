@@ -30,7 +30,7 @@ same channel, hand off to a different one, or close out the conversation.
 
 Built fresh for this hackathon (no code shared with any other project).
 
-**Built and covered by tests (80 passing, no AWS account needed to run them; CI runs
+**Built and covered by tests (83 passing, no AWS account needed to run them; CI runs
 them and `cfn-lint` on every PR):**
 
 - **Three two-way channels in one conversation.** SMS/RCS, WhatsApp and email all
@@ -51,9 +51,10 @@ them and `cfn-lint` on every PR):**
   - conversations can open on WhatsApp with an approved template
   - STOP/UNSUBSCRIBE on any channel ends all contact, and START opts back in
   - SNS redeliveries are dropped
-  - WhatsApp delivery receipts are recorded
-  - the closing receipt goes out by SES exactly once, with Reply-To set so the
-    customer can answer by email
+  - WhatsApp delivery receipts are parsed and logged (matching them to stored
+    messages does not work yet; see below)
+  - the closing receipt goes out by SES once per completed exchange, with Reply-To
+    set so the customer can answer by email
 - **Infrastructure as code** ([`template.yaml`](template.yaml), AWS SAM):
   - DynamoDB, plus SNS topics for WhatsApp, SMS and email, each with a
     service-scoped publish policy
@@ -65,12 +66,31 @@ them and `cfn-lint` on every PR):**
   receiving through the AWS APIs. It shows the plan by default and only acts with
   `--apply`.
 
-**Not yet done** — say so plainly rather than implying otherwise: no AWS resources
-have been provisioned for this project yet (no linked WhatsApp Business Account, no
-SMS number, no verified SES sender), the stack has not been deployed, no live
-message has been sent or received, and the agent's prompt has not been tuned
-against real conversations. The demo video and the Devpost submission are not done.
-Rich RCS content and inbound media are not built.
+**Verified live** (27-28 Oct 2026, ap-southeast-2, Amazon Nova Pro; evidence with
+message IDs and logs in [docs/LIVE_VERIFICATION.md](docs/LIVE_VERIFICATION.md)):
+the stack is deployed; a conversation opened on WhatsApp with a Meta-approved template;
+the agent chatted two-way on WhatsApp; the conversation closed and the SES receipt
+arrived in the customer's inbox; STOP and START changed the opt-out flag.
+
+**Not yet done** (said plainly rather than implied otherwise):
+
+- **WhatsApp delivery is currently blocked.** Since 27 Oct 21:58, Meta has rejected
+  every outbound message with error 131037: the test number's display name needs
+  approval. The STOP and START confirmation messages have never reached a phone.
+- **Email replies from the customer.** SES receiving is not set up: the domain's DNS
+  host would not take the MX record, so the stack runs without `InboundEmailAddress`.
+- **SMS/RCS.** No number; Indian SMS needs DLT registration.
+- **Claude on Bedrock.** The template's default model could not be enabled (AWS
+  Marketplace payment error), so the live stack uses Amazon Nova Pro.
+- **Known defects found live:** delivery receipts never match a stored message; the
+  receipt's subject is the agent's internal summary; a question after a closed
+  conversation can be answered by email only; START while already subscribed goes to
+  the agent and can send another receipt.
+- **No booking system.** "Confirmed" means the time is recorded in the conversation
+  and the receipt; no calendar entry is created.
+- The agent's prompt has not been tuned against real conversations. The demo video
+  and the Devpost submission are not done. Rich RCS content and inbound media are not
+  built.
 
 ## AWS CDS services used
 

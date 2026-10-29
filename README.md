@@ -30,7 +30,7 @@ same channel, hand off to a different one, or close out the conversation.
 
 Built fresh for this hackathon (no code shared with any other project).
 
-**Built and covered by tests (83 passing, no AWS account needed to run them; CI runs
+**Built and covered by tests (89 passing, no AWS account needed to run them; CI runs
 them and `cfn-lint` on every PR):**
 
 - **Three two-way channels in one conversation.** SMS/RCS, WhatsApp and email all
@@ -55,6 +55,11 @@ them and `cfn-lint` on every PR):**
     messages does not work yet; see below)
   - the closing receipt goes out by SES once per completed exchange, with Reply-To
     set so the customer can answer by email
+  - a completed exchange is published to STILL, the Triaxis cross-product event bus,
+    as `triaxis.omnidamus` / `conversation.completed.v1`. It is published after the
+    save, at most once per closing message, and never blocks the reply. STILL turns it
+    into an AXXESS follow-up task. It is off unless the `StillEventBusArn` parameter is
+    set, and **not yet switched on in the deployed stack**
 - **Infrastructure as code** ([`template.yaml`](template.yaml), AWS SAM):
   - DynamoDB, plus SNS topics for WhatsApp, SMS and email, each with a
     service-scoped publish policy

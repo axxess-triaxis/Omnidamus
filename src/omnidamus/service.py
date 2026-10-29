@@ -16,6 +16,9 @@ cannot enforce on its own and does the sending:
   Amazon SES exactly once per conversation (tracked in state).
 - SNS redeliveries are dropped by the channel's own message ID.
 - WhatsApp delivery receipts update the matching outbound turn.
+- A completed conversation is published to STILL, the Triaxis cross-product event
+  bus, as triaxis.omnidamus conversation.completed.v1 (a no-op unless
+  STILL_EVENT_BUS_ARN is set; never blocks the reply or the save).
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ import re
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
-from . import router
+from . import router, still_emit
 from .channels import ses_email, whatsapp_social
 from .schema import Channel, InboundMessage, RoutingDecision
 from .state import ConversationState, ConversationStore
@@ -45,6 +48,7 @@ RouteFn = Callable[[InboundMessage, ConversationState, bool], RoutingDecision]
 SendFn = Callable[[str, RoutingDecision], str]
 EmailFn = Callable[..., str]
 TemplateFn = Callable[..., str]
+PublishFn = Callable[..., str | None]
 
 
 def _now() -> datetime:
@@ -116,6 +120,34 @@ class _Outbox:
         self.sent.append({"channel": channel.value, "message_id": message_id})
 
 
+def completion_event_data(state: ConversationState, decision: RoutingDecision,
+                          channel: Channel, now: datetime) -> dict:
+    """The data of a STILL triaxis.omnidamus conversation.completed.v1 event."""
+    return {
+        "conversation_id": state.conversation_id,
+        "completed_at": now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "channel": channel.value,
+        "context": state.context,
+        "summary": decision.summary,
+        "key_facts": {k: str(v) for k, v in state.key_facts.items() if k != "email"},
+        "customer_phone": state.customer_phone,
+        "customer_email": state.customer_email,
+        "receipt_sent": bool(state.receipt_message_id),
+    }
+
+
+def _publish_completion(publish: PublishFn, state: ConversationState, decision: RoutingDecision,
+                        message: InboundMessage, now: datetime) -> None:
+    # Keyed on the inbound message that closed the exchange, so an SNS redelivery or
+    # Lambda retry publishes the same event id and STILL drops the duplicate.
+    key = f"{state.conversation_id}:{message.provider_message_id or now.isoformat()}"
+    try:
+        publish("triaxis.omnidamus", "conversation.completed.v1",
+                completion_event_data(state, decision, message.channel, now), key=key)
+    except Exception as error:  # noqa: BLE001 -- STILL is a side channel, never a blocker
+        log.warning("STILL publish failed: %s", type(error).__name__)
+
+
 def _resolve_conversation(message: InboundMessage, store: ConversationStore) -> str | None:
     if message.channel is Channel.EMAIL:
         return store.find_by_email(message.from_address)
@@ -130,6 +162,7 @@ def handle_inbound(
     send_email: EmailFn = ses_email.send_email,
     send_template: TemplateFn = whatsapp_social.send_template_message,
     now: datetime | None = None,
+    publish: PublishFn = still_emit.emit,
 ) -> dict:
     now = now or _now()
     conversation_id = _resolve_conversation(message, store)
@@ -233,6 +266,9 @@ def handle_inbound(
     store.save(state)
     if state.customer_email:
         store.link_email(state.customer_email, state.conversation_id)
+    if decision.conversation_complete:
+        # After the save, so STILL never hears of a completion that was not stored.
+        _publish_completion(publish, state, decision, message, now)
 
     return {
         "conversation_id": state.conversation_id,

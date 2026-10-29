@@ -48,11 +48,16 @@ Parameters:
     Type: String
     Default: ""
     Description: Email address for failure alarms (confirm the SNS subscription email). Empty = no subscription.
+  StillEventBusArn:
+    Type: String
+    Default: ""
+    Description: ARN of the STILL event bus. Set it to publish completed conversations to STILL. Empty = do not publish.
 
 Conditions:
   ReceiveEmail: !Not [!Equals [!Ref InboundEmailAddress, ""]]
   AlarmByEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
   BedrockElsewhere: !Not [!Equals [!Ref BedrockRegion, ""]]
+  PublishToStill: !Not [!Equals [!Ref StillEventBusArn, ""]]
 
 Globals:
   Function:
@@ -198,6 +203,7 @@ Resources:
           OMNIDAMUS_SES_REPLY_TO: !Ref InboundEmailAddress
           OMNIDAMUS_WHATSAPP_HANDOFF_TEMPLATE: !Ref WhatsAppHandoffTemplate
           OMNIDAMUS_WHATSAPP_TEMPLATE_LANGUAGE: !Ref WhatsAppTemplateLanguage
+          STILL_EVENT_BUS_ARN: !Ref StillEventBusArn
       Events:
         WhatsAppInbound:
           Type: SNS
@@ -239,6 +245,13 @@ Resources:
               Resource:
                 - !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*
                 - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/*
+            - !If
+              - PublishToStill
+              - Sid: StillEvents
+                Effect: Allow
+                Action: events:PutEvents
+                Resource: !Ref StillEventBusArn
+              - !Ref AWS::NoValue
     Metadata:
       Dockerfile: Dockerfile
       DockerContext: .

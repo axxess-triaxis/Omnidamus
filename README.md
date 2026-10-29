@@ -4,6 +4,11 @@ An omnichannel conversational relay agent, built for the **AWS Communication
 Developer Services (CDS) Agentic AI Partner Hackathon**
 ([aws-cds-partner.devpost.com](https://aws-cds-partner.devpost.com), deadline Oct 29, 2026).
 
+In the Triaxis stack, Omnidamus does **SMS, WhatsApp and email outreach and customer service**.
+Every completed conversation is published to [STILL](https://github.com/axxess-triaxis/STILL),
+which turns it into a follow-up task in [AXXESS TRIaxis](https://github.com/axxess-triaxis/AXXESSTRIAXIS).
+See [Part of the Triaxis stack](#part-of-the-triaxis-stack).
+
 ## Concept
 
 Customer conversations rarely stay in one channel. Omnidamus is an agent that lets a
@@ -59,7 +64,12 @@ them and `cfn-lint` on every PR):**
     as `triaxis.omnidamus` / `conversation.completed.v1`. It is published after the
     save, at most once per closing message, and never blocks the reply. STILL turns it
     into an AXXESS follow-up task. It is off unless the `StillEventBusArn` parameter is
-    set, and **not yet switched on in the deployed stack**
+    set. **Switched on in the deployed stack on 2026-10-29** (stack updated 12:31 UTC with
+    `StillEventBusArn` pointing at the `still` bus, checked read-only with
+    `aws cloudformation describe-stacks`). Verified end to end the same day: a real WhatsApp
+    conversation completed and became AXXESS task `15b11f0f` (recorded in
+    [STILL#1](https://github.com/axxess-triaxis/STILL/pull/1); STILL's idempotency record reads COMPLETED). WhatsApp replies to
+    the customer are still blocked by Meta
 - **Infrastructure as code** ([`template.yaml`](template.yaml), AWS SAM):
   - DynamoDB, plus SNS topics for WhatsApp, SMS and email, each with a
     service-scoped publish policy
@@ -171,3 +181,26 @@ python scripts/start_conversation.py --function <FunctionName> --phone +14255550
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Part of the Triaxis stack
+
+[Triaxis Ventures Private Limited](https://github.com/axxess-triaxis) sells one product,
+**AXXESS TRIaxis**. The other products below run the company itself. Triaxis Ventures is
+Tenant 0, the dogfooded tenant, on every one of them, AXXESS included. **STILL** joins them
+into one stack.
+
+| Product | Its job in the stack | State, checked 2026-10-29 |
+|---|---|---|
+| [AXXESS TRIaxis](https://github.com/axxess-triaxis/AXXESSTRIAXIS) | The product we sell: an AI operating platform with governance and a human in the loop | Product: [investor.triaxisventures.com](https://investor.triaxisventures.com) (demo); [Live Beta](https://landing.triaxisventures.com) (sign-in) |
+| [PORT4LLEO](https://github.com/axxess-triaxis/port4lleo) | Governance, security checks, builder analysis, product improvements | Live at [port4leo-sigma.vercel.app](https://port4leo-sigma.vercel.app) |
+| [Callismatic](https://github.com/axxess-triaxis/callismatic) | Sales and outreach: triages inbound calls and messages, researches leads, places callbacks | Live on AWS Lambda (us-east-1); publishes to STILL since 2026-10-29, verified end to end |
+| [Omnidamus](https://github.com/axxess-triaxis/Omnidamus) | SMS, WhatsApp and email outreach and customer service | Deployed on AWS (ap-southeast-2); publishes to STILL since 2026-10-29, verified end to end; WhatsApp replies blocked on Meta's display-name review |
+| [STILL](https://github.com/axxess-triaxis/STILL) | The event bus that joins them: Callismatic leads and Omnidamus completed conversations become AXXESS tasks | Deployed (EventBridge, ap-southeast-2); STILL to AXXESS verified live 2026-10-29 |
+
+The founder's aim is a roughly 80% automated company with the founder as the human in the
+loop: AXXESS building, selling, serving customers, testing and doing outreach on itself through
+these products, as a repeatable, very low-cost prototype of an AI-native startup. The founder
+also states that every product except AXXESS TRIaxis was built at zero incremental cost.
+*Both are founder-stated, source artifact needed.* The known running costs are small and paid
+from AWS credits: STILL is estimated at under USD 2 a month, Omnidamus keeps a Route 53 zone at
+USD 0.50 a month, and Amazon Bedrock tokens are billed per use.

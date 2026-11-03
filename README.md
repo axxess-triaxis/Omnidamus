@@ -156,6 +156,12 @@ sam build
 sam deploy --guided   # set InboundEmailAddress, WhatsAppHandoffTemplate, AlarmEmail as needed
 ```
 
+**Staging** (used by the cross-product end-to-end test; not deployed yet): set `Stage=staging` and
+stack name `omnidamus-staging`. Every outbound SMS, WhatsApp message and email is then recorded in
+the logs instead of sent (`OMNIDAMUS_OUTBOUND_MODE=capture`, `src/omnidamus/channels/capture.py`), so
+the sender parameters can be placeholders. A staging stack is refused if `StillEventBusArn` is the
+production bus. `Stage` defaults to `prod`, which adds nothing to the function.
+
 Connect the inbound side (dry run first, then `--apply`):
 
 ```bash

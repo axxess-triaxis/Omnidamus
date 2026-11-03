@@ -21,6 +21,8 @@ import os
 import boto3
 from botocore.exceptions import ClientError
 
+from . import capture
+
 
 class SmsRcsSendError(RuntimeError):
     pass
@@ -44,6 +46,9 @@ def send_text_message(
     region_name: str | None = None,
 ) -> str:
     """Send an SMS or plain-text RCS message. Returns the MessageId."""
+
+    if capture.enabled():
+        return capture.record("sms_rcs")
 
     kwargs: dict = {
         "DestinationPhoneNumber": to_number,

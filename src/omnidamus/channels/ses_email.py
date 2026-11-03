@@ -14,6 +14,8 @@ import os
 import boto3
 from botocore.exceptions import ClientError
 
+from . import capture
+
 
 class SesSendError(RuntimeError):
     pass
@@ -28,7 +30,10 @@ def send_email(
 ) -> str:
     """Send a plain-text email via Amazon SES. Returns the SES MessageId."""
 
-    sender = from_address or os.environ.get("OMNIDAMUS_SES_FROM_ADDRESS")
+    if capture.enabled():
+        return capture.record("email")
+
+    sender =from_address or os.environ.get("OMNIDAMUS_SES_FROM_ADDRESS")
     if not sender:
         raise SesSendError(
             "No from_address given and OMNIDAMUS_SES_FROM_ADDRESS is unset"

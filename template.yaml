@@ -6,7 +6,16 @@ Description: >-
   Messaging SMS) arrive on SNS; a Strands agent on Bedrock decides; replies go out on
   SMS, WhatsApp or SES; conversation memory lives in DynamoDB.
 
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@2
+
 Parameters:
+  Stage:
+    Type: String
+    Default: prod
+    AllowedValues: [prod, staging]
+    Description: staging captures every outbound message instead of sending it. prod changes nothing.
   SesFromAddress:
     Type: String
     Description: Verified SES sender address used for closing receipts.
@@ -58,6 +67,19 @@ Conditions:
   AlarmByEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
   BedrockElsewhere: !Not [!Equals [!Ref BedrockRegion, ""]]
   PublishToStill: !Not [!Equals [!Ref StillEventBusArn, ""]]
+  IsProd: !Equals [!Ref Stage, prod]
+
+# Stops a staging stack publishing test conversations to the production STILL bus.
+Rules:
+  StagingNeverPublishesToProductionStill:
+    RuleCondition: !Equals [!Ref Stage, staging]
+    Assertions:
+      - Assert:
+          Fn::Not:
+            - Fn::Equals:
+                - !Ref StillEventBusArn
+                - arn:aws:events:ap-southeast-2:227214487086:event-bus/still
+        AssertDescription: A staging stack must not publish to the production STILL bus
 
 Globals:
   Function:
@@ -204,6 +226,7 @@ Resources:
           OMNIDAMUS_WHATSAPP_HANDOFF_TEMPLATE: !Ref WhatsAppHandoffTemplate
           OMNIDAMUS_WHATSAPP_TEMPLATE_LANGUAGE: !Ref WhatsAppTemplateLanguage
           STILL_EVENT_BUS_ARN: !Ref StillEventBusArn
+          OMNIDAMUS_OUTBOUND_MODE: !If [IsProd, !Ref AWS::NoValue, capture]
       Events:
         WhatsAppInbound:
           Type: SNS

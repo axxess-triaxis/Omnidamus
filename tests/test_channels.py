@@ -94,3 +94,31 @@ def test_send_email_sets_reply_to(monkeypatch):
         mock_client.return_value.send_email.return_value = {"MessageId": "ses-9"}
         ses_email.send_email("to@example.com", "S", "B")
     assert mock_client.return_value.send_email.call_args.kwargs["ReplyToAddresses"] == ["replies@example.com"]
+
+
+@pytest.mark.parametrize(
+    ("send", "channel"),
+    [
+        (lambda: sms_rcs.send_text_message("+15550001111", "hello"), "sms_rcs"),
+        (lambda: ses_email.send_email("to@example.com", "Subject", "Body"), "email"),
+        (lambda: whatsapp_social.send_text_message("+15550001111", "hello"), "whatsapp"),
+        (lambda: whatsapp_social.send_template_message("+15550001111", "demo"), "whatsapp"),
+    ],
+)
+def test_capture_mode_never_reaches_a_provider(monkeypatch, caplog, send, channel):
+    monkeypatch.setenv("OMNIDAMUS_OUTBOUND_MODE", "capture")
+    caplog.set_level("INFO")
+    with patch("boto3.client") as mock_client:
+        message_id = send()
+    mock_client.assert_not_called()
+    assert message_id.startswith("captured-")
+    assert f'"outbound_captured": "{channel}"' in caplog.text
+    assert "+15550001111" not in caplog.text and "to@example.com" not in caplog.text
+
+
+def test_any_other_outbound_mode_still_sends(monkeypatch):
+    monkeypatch.setenv("OMNIDAMUS_OUTBOUND_MODE", "")
+    monkeypatch.setenv("OMNIDAMUS_SMS_RCS_ORIGINATION_IDENTITY", "pool-abc123")
+    with patch("boto3.client") as mock_client:
+        mock_client.return_value.send_text_message.return_value = {"MessageId": "sms-123"}
+        assert sms_rcs.send_text_message("+15550001111", "hello") == "sms-123"

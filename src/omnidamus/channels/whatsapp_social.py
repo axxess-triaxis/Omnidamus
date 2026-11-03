@@ -20,6 +20,8 @@ import os
 import boto3
 from botocore.exceptions import ClientError
 
+from . import capture
+
 
 class WhatsAppSendError(RuntimeError):
     pass
@@ -86,6 +88,9 @@ def _send(
     meta_api_version: str | None,
     region_name: str | None,
 ) -> str:
+    if capture.enabled():
+        return capture.record("whatsapp")
+
     phone_number_id = origination_phone_number_id or os.environ.get(
         "OMNIDAMUS_WHATSAPP_ORIGINATION_PHONE_NUMBER_ID"
     )

@@ -30,7 +30,7 @@ import re
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
-from . import router, still_emit
+from . import axxess_context, router, still_emit
 from .channels import ses_email, whatsapp_social
 from .schema import Channel, InboundMessage, RoutingDecision
 from .state import ConversationState, ConversationStore
@@ -90,7 +90,9 @@ def receipt_text(state: ConversationState, decision: RoutingDecision) -> tuple[s
 def _default_route(message, state, window_open):
     from .agent import route_message  # imported lazily: pulls in Strands/Bedrock
 
-    return route_message(message, state, window_open)
+    # Phase 3 (2026-11-16): the customer's AXXESS lead history, when AXXESS is configured. None otherwise.
+    history = axxess_context.lead_history(state.customer_phone, state.customer_email) if state else None
+    return route_message(message, state, window_open, history)
 
 
 class _Outbox:

@@ -56,6 +56,13 @@ class ConversationState(BaseModel):
     last_whatsapp_inbound_at: datetime | None = None
     receipt_message_id: str | None = None
     opted_out: bool = False
+    # Set when AXXESS started this conversation for an organization (2026-11-20). None for
+    # Triaxis's own (Tenant 0) conversations, which keep the phone-number key.
+    organization_id: str | None = None
+    job_id: str | None = None
+    line: str | None = None  # the organization's own business number, E.164
+    whatsapp_origination_id: str | None = None
+    sms_origination_identity: str | None = None
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
     version: int = 0
@@ -159,3 +166,31 @@ class ConversationStore:
 
 def _email_key(email: str) -> str:
     return f"email#{email.strip().lower()}"
+
+
+# Organization-scoped keys (2026-11-20). Triaxis's own lines keep the bare phone-number key, so
+# existing conversations are untouched. Any other business number gets "line:<number>#<phone>",
+# so two organizations writing to the same person never share a thread or an opt-out.
+
+
+def tenant0_lines() -> set[str]:
+    """Triaxis's own business numbers, from the deployed configuration."""
+    raw = [
+        os.environ.get("OMNIDAMUS_WHATSAPP_DISPLAY_NUMBER", ""),
+        os.environ.get("OMNIDAMUS_SMS_RCS_ORIGINATION_IDENTITY", ""),
+        *os.environ.get("OMNIDAMUS_TENANT0_LINES", "").split(","),
+    ]
+    lines = set()
+    for value in raw:
+        digits = "".join(ch for ch in value if ch.isdigit())
+        if value.strip().startswith("+") or (digits and digits == value.strip()):
+            lines.add(f"+{digits}")
+    return lines
+
+
+def is_tenant0_line(line: str | None) -> bool:
+    return line is None or line in tenant0_lines()
+
+
+def conversation_key(line: str | None, phone: str) -> str:
+    return phone if is_tenant0_line(line) else f"line:{line}#{phone}"

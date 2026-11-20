@@ -61,12 +61,21 @@ Parameters:
     Type: String
     Default: ""
     Description: ARN of the STILL event bus. Set it to publish completed conversations to STILL. Empty = do not publish.
+  StartApiKeySecretArn:
+    Type: String
+    Default: ""
+    Description: Secrets Manager ARN of the key AXXESS sends as x-api-key to POST /start. Set it to create the Function URL. Empty = no public endpoint.
+  Tenant0Lines:
+    Type: String
+    Default: ""
+    Description: Extra comma-separated E.164 numbers that belong to Triaxis (Tenant 0). Customer conversations are refused on them.
 
 Conditions:
   ReceiveEmail: !Not [!Equals [!Ref InboundEmailAddress, ""]]
   AlarmByEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
   BedrockElsewhere: !Not [!Equals [!Ref BedrockRegion, ""]]
   PublishToStill: !Not [!Equals [!Ref StillEventBusArn, ""]]
+  HasStartApi: !Not [!Equals [!Ref StartApiKeySecretArn, ""]]
   IsProd: !Equals [!Ref Stage, prod]
 
 # Stops a staging stack publishing test conversations to the production STILL bus.
@@ -227,6 +236,8 @@ Resources:
           OMNIDAMUS_WHATSAPP_TEMPLATE_LANGUAGE: !Ref WhatsAppTemplateLanguage
           STILL_EVENT_BUS_ARN: !Ref StillEventBusArn
           OMNIDAMUS_OUTBOUND_MODE: !If [IsProd, !Ref AWS::NoValue, capture]
+          OMNIDAMUS_START_API_KEY_SECRET_ARN: !Ref StartApiKeySecretArn
+          OMNIDAMUS_TENANT0_LINES: !Ref Tenant0Lines
       Events:
         WhatsAppInbound:
           Type: SNS
@@ -275,10 +286,35 @@ Resources:
                 Action: events:PutEvents
                 Resource: !Ref StillEventBusArn
               - !Ref AWS::NoValue
+            - !If
+              - HasStartApi
+              - Sid: StartApiKey
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref StartApiKeySecretArn
+              - !Ref AWS::NoValue
     Metadata:
       Dockerfile: Dockerfile
       DockerContext: .
       DockerTag: python3.12-v1
+
+  # POST /start for AXXESS (stack org routing, 2026-11-20). The function checks x-api-key
+  # against the secret itself; AuthType NONE because AXXESS runs on Vercel without AWS credentials.
+  StartUrl:
+    Type: AWS::Lambda::Url
+    Condition: HasStartApi
+    Properties:
+      TargetFunctionArn: !GetAtt OmnidamusFunction.Arn
+      AuthType: NONE
+
+  StartUrlPermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasStartApi
+    Properties:
+      FunctionName: !Ref OmnidamusFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
 
   OmnidamusLogGroup:
     Type: AWS::Logs::LogGroup
@@ -352,3 +388,7 @@ Outputs:
     Condition: ReceiveEmail
     Description: SES receipt rule set; scripts/connect_inbound.py activates it.
     Value: !Ref InboundRuleSet
+  StartUrl:
+    Condition: HasStartApi
+    Description: AXXESS posts organization conversation starts to <url>start with the x-api-key header.
+    Value: !GetAtt StartUrl.FunctionUrl

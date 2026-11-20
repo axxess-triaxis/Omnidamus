@@ -16,13 +16,18 @@ class UnroutableChannelError(RuntimeError):
     pass
 
 
-def dispatch_reply(to_address: str, decision: RoutingDecision) -> str:
-    """Send `decision.reply_text` on `decision.reply_channel`. Returns the provider message ID."""
+def dispatch_reply(to_address: str, decision: RoutingDecision, *,
+                   whatsapp_origination_id: str | None = None,
+                   sms_origination_identity: str | None = None) -> str:
+    """Send `decision.reply_text` on `decision.reply_channel`. Returns the provider message ID.
+    The origination arguments carry an organization's own sender; None uses the deployed default."""
 
     if decision.reply_channel is Channel.SMS_RCS:
-        return sms_rcs.send_text_message(to_address, decision.reply_text)
+        origin = {"origination_identity": sms_origination_identity} if sms_origination_identity else {}
+        return sms_rcs.send_text_message(to_address, decision.reply_text, **origin)
     if decision.reply_channel is Channel.WHATSAPP:
-        return whatsapp_social.send_text_message(to_address, decision.reply_text)
+        origin = {"origination_phone_number_id": whatsapp_origination_id} if whatsapp_origination_id else {}
+        return whatsapp_social.send_text_message(to_address, decision.reply_text, **origin)
     if decision.reply_channel is Channel.EMAIL:
         return ses_email.send_email(
             to_address,

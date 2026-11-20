@@ -47,6 +47,8 @@ def parse_whatsapp_event(sns_message: str) -> list[InboundMessage]:
 
     messages: list[InboundMessage] = []
     for change in entry.get("changes", []):
+        display = (change.get("value", {}).get("metadata") or {}).get("display_phone_number")
+        line = normalize_phone(display) if display else None
         for msg in change.get("value", {}).get("messages", []):
             body = _whatsapp_text(msg)
             if body is None:
@@ -62,6 +64,7 @@ def parse_whatsapp_event(sns_message: str) -> list[InboundMessage]:
                     conversation_id=phone,
                     channel=Channel.WHATSAPP,
                     from_address=phone,
+                    to_address=line,
                     body=body,
                     received_at=received_at,
                     provider_message_id=msg.get("id"),
@@ -115,13 +118,17 @@ def parse_whatsapp_statuses(sns_message: str) -> list[dict]:
     if not entry:
         return []
 
+    from .state import conversation_key
+
     statuses = []
     for change in entry.get("changes", []):
+        display = (change.get("value", {}).get("metadata") or {}).get("display_phone_number")
+        line = normalize_phone(display) if display else None
         for status in change.get("value", {}).get("statuses", []):
             if not status.get("id") or not status.get("recipient_id"):
                 continue
             statuses.append({
-                "conversation_id": normalize_phone(status["recipient_id"]),
+                "conversation_id": conversation_key(line, normalize_phone(status["recipient_id"])),
                 "provider_message_id": status["id"],
                 "status": status.get("status", "unknown"),
                 "errors": status.get("errors", []),
@@ -193,11 +200,13 @@ def parse_sms_event(sns_message: str) -> list[InboundMessage]:
     if not body or not sender:
         return []
     phone = normalize_phone(sender)
+    destination = payload.get("destinationNumber")
     return [
         InboundMessage(
             conversation_id=phone,
             channel=Channel.SMS_RCS,
             from_address=phone,
+            to_address=normalize_phone(destination) if destination else None,
             body=body,
             provider_message_id=payload.get("inboundMessageId"),
         )

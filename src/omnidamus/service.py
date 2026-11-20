@@ -19,6 +19,11 @@ cannot enforce on its own and does the sending:
 - A completed conversation is published to STILL, the Triaxis cross-product event
   bus, as triaxis.omnidamus conversation.completed.v1 (a no-op unless
   STILL_EVENT_BUS_ARN is set; never blocks the reply or the save).
+- Organizations (2026-11-20): a conversation AXXESS starts for an organization sends
+  from that organization's own number, is keyed by that number plus the customer's
+  phone (state.conversation_key), and carries the AXXESS job id to STILL. It never
+  sends email from Triaxis's address. A message to an organization's number that no
+  started conversation knows is dropped, never filed as Triaxis's.
 """
 
 from __future__ import annotations
@@ -33,7 +38,7 @@ from datetime import datetime, timedelta, timezone
 from . import router, still_emit
 from .channels import ses_email, whatsapp_social
 from .schema import Channel, InboundMessage, RoutingDecision
-from .state import ConversationState, ConversationStore
+from .state import ConversationState, ConversationStore, conversation_key, is_tenant0_line
 
 log = logging.getLogger(__name__)
 
@@ -101,17 +106,31 @@ class _Outbox:
         self.send, self.send_template = send, send_template
         self.sent: list[dict] = []
 
+    def _origin(self) -> dict:
+        """An organization's own sender identities; empty for Triaxis's own conversations,
+        which send from the deployed defaults."""
+        origin = {}
+        if self.state.whatsapp_origination_id:
+            origin["whatsapp_origination_id"] = self.state.whatsapp_origination_id
+        if self.state.sms_origination_identity:
+            origin["sms_origination_identity"] = self.state.sms_origination_identity
+        return origin
+
     def text(self, channel: Channel, text: str) -> None:
         out = RoutingDecision(summary=self.summary, reply_channel=channel, reply_text=text)
-        message_id = self.send(address_for(channel, self.state), out)
+        message_id = self.send(address_for(channel, self.state), out, **self._origin())
         self._record(channel, text, message_id)
 
     def template(self, name: str, params: list[str] | None = None) -> None:
+        extra = {}
+        if self.state.whatsapp_origination_id:
+            extra["origination_phone_number_id"] = self.state.whatsapp_origination_id
         message_id = self.send_template(
             self.state.customer_phone,
             name,
             language_code=os.environ.get("OMNIDAMUS_WHATSAPP_TEMPLATE_LANGUAGE", "en"),
             body_parameters=params or None,
+            **extra,
         )
         self._record(Channel.WHATSAPP, f"[template {name}] {' | '.join(params or [])}".strip(), message_id)
 
@@ -133,6 +152,8 @@ def completion_event_data(state: ConversationState, decision: RoutingDecision,
         "customer_phone": state.customer_phone,
         "customer_email": state.customer_email,
         "receipt_sent": bool(state.receipt_message_id),
+        **({"job_id": state.job_id} if state.job_id else {}),
+        **({"organization_id": state.organization_id} if state.organization_id else {}),
     }
 
 
@@ -151,7 +172,7 @@ def _publish_completion(publish: PublishFn, state: ConversationState, decision: 
 def _resolve_conversation(message: InboundMessage, store: ConversationStore) -> str | None:
     if message.channel is Channel.EMAIL:
         return store.find_by_email(message.from_address)
-    return message.conversation_id
+    return conversation_key(message.to_address, message.from_address)
 
 
 def handle_inbound(
@@ -171,7 +192,13 @@ def handle_inbound(
         log.info("No conversation for %s on %s; dropped", message.from_address, message.channel.value)
         return {"skipped": "unknown_sender"}
 
-    state = store.get(conversation_id) or ConversationState(
+    state = store.get(conversation_id)
+    if state is None and message.channel is not Channel.EMAIL and not is_tenant0_line(message.to_address):
+        # A message to an organization's number that no AXXESS-started conversation knows.
+        # Filing it as Triaxis's would leak it; routing it to its organization is not built yet.
+        log.info("No conversation on line for %s; dropped", message.channel.value)
+        return {"skipped": "unknown_line"}
+    state = state or ConversationState(
         conversation_id=conversation_id,
         customer_phone=message.from_address,
         current_channel=message.channel,
@@ -232,7 +259,8 @@ def handle_inbound(
         target = message.channel if message.channel is not Channel.WHATSAPP else Channel.SMS_RCS
         if link:
             text = f"{text}\n\nContinue on WhatsApp: {link}"
-    elif target is Channel.EMAIL and not state.customer_email:
+    elif target is Channel.EMAIL and (not state.customer_email or state.organization_id):
+        # Organizations do not send email through Triaxis's address.
         target = message.channel
 
     if target is None:
@@ -247,6 +275,8 @@ def handle_inbound(
         state.status = "complete"
         if state.receipt_message_id:
             log.info("Receipt already sent for %s", state.conversation_id)
+        elif state.organization_id:
+            log.info("No email receipt for an organization's conversation")
         elif not state.customer_email:
             log.warning("Conversation %s complete but no email on file", state.conversation_id)
         else:
@@ -264,7 +294,7 @@ def handle_inbound(
                 outbox.sent.append({"channel": Channel.EMAIL.value, "message_id": receipt_id})
 
     store.save(state)
-    if state.customer_email:
+    if state.customer_email and not state.organization_id:
         store.link_email(state.customer_email, state.conversation_id)
     if decision.conversation_complete:
         # After the save, so STILL never hears of a completion that was not stored.
@@ -297,6 +327,10 @@ def apply_whatsapp_status(status: dict, store: ConversationStore) -> bool:
     return True
 
 
+class StartRefused(ValueError):
+    """An organization start that is missing or misusing a sender. Never retried."""
+
+
 def start_conversation(
     phone: str,
     store: ConversationStore,
@@ -308,27 +342,57 @@ def start_conversation(
     template_params: list[str] | None = None,
     send: SendFn = router.dispatch_reply,
     send_template: TemplateFn = whatsapp_social.send_template_message,
+    organization_id: str | None = None,
+    job_id: str | None = None,
+    line: str | None = None,
+    whatsapp_origination_id: str | None = None,
+    sms_origination_identity: str | None = None,
 ) -> dict:
     """Open a conversation (step 1 of the reference flow): an SMS/RCS notification,
     or -- since a business can only open a WhatsApp chat with an approved
     template -- a WhatsApp template. Replaces any earlier conversation with the
-    same number, unless the customer has opted out."""
+    same number, unless the customer has opted out.
 
-    existing = store.get(phone)
+    With organization_id (a start from AXXESS for an organization, 2026-11-20) it also
+    needs the AXXESS job_id, the organization's own business number (line) and its
+    sender for the channel. The line must not be one of Triaxis's own numbers. Opt-outs
+    are per line, so a STOP to one organization does not silence another."""
+
+    if organization_id:
+        if not job_id:
+            raise StartRefused("An organization start needs the AXXESS job_id")
+        if not line:
+            raise StartRefused("An organization start needs the organization's own number (line)")
+        if is_tenant0_line(line):
+            raise StartRefused("An organization cannot send from a Triaxis number")
+        if channel is Channel.WHATSAPP and not whatsapp_origination_id:
+            raise StartRefused("A WhatsApp start needs the organization's WhatsApp sender")
+        if channel is Channel.SMS_RCS and not sms_origination_identity:
+            raise StartRefused("An SMS start needs the organization's SMS sender")
+        if channel is Channel.EMAIL:
+            raise StartRefused("Organizations cannot open conversations by email yet")
+    key = conversation_key(line if organization_id else None, phone)
+
+    existing = store.get(key)
     if existing and existing.opted_out:
-        return {"conversation_id": phone, "skipped": "opted_out"}
+        return {"conversation_id": key, "skipped": "opted_out"}
     if channel is Channel.WHATSAPP and not template:
         raise ValueError("A WhatsApp conversation must open with an approved template")
     if channel is not Channel.WHATSAPP and not notification:
         raise ValueError("An SMS/RCS conversation needs notification text")
 
     state = ConversationState(
-        conversation_id=phone,
+        conversation_id=key,
         customer_phone=phone,
-        customer_email=email if email and _EMAIL.match(email) else None,
+        customer_email=email if email and _EMAIL.match(email) and not organization_id else None,
         context=context,
         current_channel=channel,
         version=existing.version if existing else 0,
+        organization_id=organization_id,
+        job_id=job_id if organization_id else None,
+        line=line if organization_id else None,
+        whatsapp_origination_id=whatsapp_origination_id if organization_id else None,
+        sms_origination_identity=sms_origination_identity if organization_id else None,
     )
     outbox = _Outbox(state, context or "notification", send, send_template)
     if channel is Channel.WHATSAPP:
@@ -337,5 +401,5 @@ def start_conversation(
         outbox.text(Channel.SMS_RCS, notification)
     store.save(state)
     if state.customer_email:
-        store.link_email(state.customer_email, phone)
-    return {"conversation_id": phone, "message_id": outbox.sent[0]["message_id"]}
+        store.link_email(state.customer_email, key)
+    return {"conversation_id": key, "message_id": outbox.sent[0]["message_id"]}

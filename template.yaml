@@ -316,6 +316,17 @@ Resources:
       Principal: "*"
       FunctionUrlAuthType: NONE
 
+  # Lambda also requires lambda:InvokeFunction for a public Function URL; without it every call
+  # gets 403 before the handler runs. InvokedViaFunctionUrl keeps this grant to URL calls only.
+  StartUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasStartApi
+    Properties:
+      FunctionName: !Ref OmnidamusFunction
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
   OmnidamusLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:

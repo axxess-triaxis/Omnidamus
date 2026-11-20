@@ -187,6 +187,27 @@ python scripts/start_conversation.py --function <FunctionName> --phone +14255550
   --notification "Your order 1042 is ready. Reply with a pickup time."
 ```
 
+## Conversations for AXXESS organizations
+
+Since 2026-11-20 AXXESS TRIaxis can start a conversation for one of its customer organizations
+("Message with agent"). One shared deployment serves every organization:
+
+- **Start.** AXXESS sends `POST <StartUrl>start` with the `x-api-key` header and
+  `organization_id`, `job_id`, `line` (the organization's own number), `phone`, `channel`, plus
+  `notification` (SMS) or `template` (WhatsApp) and the organization's sender
+  (`sms_origination_identity` or `whatsapp_origination_id`). Replies: 202 started, 400 bad
+  request, 401 wrong key, 409 opted out, 422 refused (for example a Triaxis number as `line`).
+  The endpoint exists only when the `StartApiKeySecretArn` parameter is set.
+- **Separate threads.** A conversation on an organization's number is stored as
+  `line:<number>#<phone>`, so two organizations messaging the same person never share a thread,
+  and an opt-out applies to one organization only. Triaxis's own numbers (the WhatsApp display
+  number, the SMS origination identity and `Tenant0Lines`) keep the plain phone key.
+- **Unknown numbers.** A message to an organization's number that no AXXESS start opened is
+  dropped (`unknown_line`), never filed as Triaxis's.
+- **Results.** A completed conversation's STILL event carries `job_id` and `organization_id`;
+  STILL files it into that organization through AXXESS `POST /api/stack/results`. No receipt
+  email is sent and no email address is linked for an organization's conversation.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

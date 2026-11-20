@@ -20,6 +20,12 @@ class InboundMessage(BaseModel):
     conversation_id: str
     channel: Channel
     from_address: str
+    to_address: str | None = Field(
+        default=None,
+        description="The business number the message arrived on, in E.164 (WhatsApp "
+        "metadata.display_phone_number, SMS destinationNumber). Decides which "
+        "organization's conversation it belongs to",
+    )
     body: str
     received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     provider_message_id: str | None = Field(

@@ -69,7 +69,7 @@ them and `cfn-lint` on every PR):**
     `aws cloudformation describe-stacks`). Verified end to end the same day: a real WhatsApp
     conversation completed and became AXXESS task `15b11f0f` (recorded in
     [STILL#1](https://github.com/axxess-triaxis/STILL/pull/1); STILL's idempotency record reads COMPLETED). WhatsApp replies to
-    the customer are still blocked by Meta
+    the customer are delivering again since 2026-10-29 (see Not yet done)
 - **Infrastructure as code** ([`template.yaml`](template.yaml), AWS SAM):
   - DynamoDB, plus SNS topics for WhatsApp, SMS and email, each with a
     service-scoped publish policy
@@ -89,9 +89,12 @@ arrived in the customer's inbox; STOP and START changed the opt-out flag.
 
 **Not yet done** (said plainly rather than implied otherwise):
 
-- **WhatsApp delivery is currently blocked.** Since 27 Oct 21:58, Meta has rejected
-  every outbound message with error 131037: the test number's display name needs
-  approval. The STOP and START confirmation messages have never reached a phone.
+- **WhatsApp delivery: unblocked (checked 2026-11-20).** From 27 Oct 21:58 Meta rejected
+  outbound messages with error 131037 while the test number's display name was in review.
+  Meta's `phone_number_name_update` decision reached the function on 28 Oct, and on
+  29 Oct 12:44 UTC an outbound message went accepted, sent, delivered and read with no
+  errors (CloudWatch `/aws/lambda/omnidamus-OmnidamusFunction-*`, ap-southeast-2).
+  Whether the STOP and START confirmation messages now reach a phone has not been re-checked.
 - **Email replies from the customer.** SES receiving is not set up: the domain's DNS
   host would not take the MX record, so the stack runs without `InboundEmailAddress`.
 - **SMS/RCS.** No number; Indian SMS needs DLT registration.
@@ -199,8 +202,8 @@ into one stack.
 |---|---|---|
 | [AXXESS TRIaxis](https://github.com/axxess-triaxis/AXXESSTRIAXIS) | The product we sell: an AI operating platform with governance and a human in the loop | Product: [investor.triaxisventures.com](https://investor.triaxisventures.com) (demo); [Live Beta](https://landing.triaxisventures.com) (sign-in) |
 | [PORT4LLEO](https://github.com/axxess-triaxis/port4lleo) | Governance, security checks, builder analysis, product improvements | Live at [port4leo-sigma.vercel.app](https://port4leo-sigma.vercel.app) |
-| [Callismatic](https://github.com/axxess-triaxis/callismatic) | Sales and outreach: triages inbound calls and messages, researches leads, places callbacks | Live on AWS Lambda (us-east-1); publishes to STILL since 2026-10-29, verified end to end |
-| [Omnidamus](https://github.com/axxess-triaxis/Omnidamus) | SMS, WhatsApp and email outreach and customer service | Deployed on AWS (ap-southeast-2); publishes to STILL since 2026-10-29, verified end to end; WhatsApp replies blocked on Meta's display-name review |
+| [Callismatic](https://github.com/axxess-triaxis/callismatic) | Sales and outreach: triages inbound calls and messages, researches leads; outbound calls are built and off | Live on AWS Lambda (us-east-1); publishes to STILL since 2026-10-29, verified end to end; outbound calls wait on DLT registration with TRAI |
+| [Omnidamus](https://github.com/axxess-triaxis/Omnidamus) | SMS, WhatsApp and email outreach and customer service | Deployed on AWS (ap-southeast-2); publishes to STILL since 2026-10-29, verified end to end; WhatsApp messages delivering since 2026-10-29 (Meta display-name review cleared) |
 | [STILL](https://github.com/axxess-triaxis/STILL) | The event bus that joins them: Callismatic leads and Omnidamus completed conversations become AXXESS tasks | Deployed (EventBridge, ap-southeast-2); STILL to AXXESS verified live 2026-10-29 |
 
 The founder's aim is a roughly 80% automated company with the founder as the human in the

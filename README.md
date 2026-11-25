@@ -57,7 +57,7 @@ them and `cfn-lint` on every PR):**
   - STOP/UNSUBSCRIBE on any channel ends all contact, and START opts back in
   - SNS redeliveries are dropped
   - WhatsApp delivery receipts are stored by message ID and shown on the matching
-    message (not deployed yet; see below)
+    message
   - the closing receipt goes out by SES once per completed exchange, with Reply-To
     set so the customer can answer by email
   - a completed exchange is published to STILL, the Triaxis cross-product event bus,
@@ -94,18 +94,20 @@ arrived in the customer's inbox; STOP and START changed the opt-out flag.
   Meta's `phone_number_name_update` decision reached the function on 28 Oct, and on
   29 Oct 12:44 UTC an outbound message went accepted, sent, delivered and read with no
   errors (CloudWatch `/aws/lambda/omnidamus-OmnidamusFunction-*`, ap-southeast-2).
-  Whether the STOP and START confirmation messages now reach a phone has not been re-checked.
+  The STOP confirmation was delivered and read on 25 Nov. The START confirmation sent
+  after a STOP has not been checked on a phone.
 - **Email replies from the customer.** SES receiving is not set up: the domain's DNS
   host would not take the MX record, so the stack runs without `InboundEmailAddress`.
 - **SMS/RCS.** No number; Indian SMS needs DLT registration.
 - **Claude on Bedrock.** The template's default model could not be enabled (AWS
   Marketplace payment error), so the live stack uses Amazon Nova Pro.
-- **Defects found live, fixed in code and tests but not deployed:** delivery receipts
+- **Defects found live, fixed and deployed on 25 Nov 2026 (19:48 IST):** delivery receipts
   never matched a stored message; the receipt's subject was the agent's internal summary;
   a question after a closed conversation could be answered by email only; START while
   already subscribed went to the agent and could send another receipt; logged Meta
-  message IDs contained the customer's phone number. The live stack still behaves the
-  old way until it is redeployed, and existing log entries are not changed by the fix.
+  message IDs contained the customer's phone number. Receipt recording and clean logs
+  were checked live; START was checked on staging only; the receipt email and the
+  email-only fix have unit tests only. Log entries from before the deploy are unchanged.
 - **No booking system.** "Confirmed" means the time is recorded in the conversation
   and the receipt; no calendar entry is created.
 - The agent's prompt has not been tuned against real conversations. The demo video

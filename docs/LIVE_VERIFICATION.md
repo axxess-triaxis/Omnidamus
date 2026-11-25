@@ -200,9 +200,9 @@ verified, and `+91XXXXXX9963` is opted in.
 5. **START while already opted in goes to the agent.** On 28 Oct 09:35 it produced a
    confirmation and a third receipt (SES `010801a180aef759-945bb0d5-3872-4027-ba9e-1736f9aa4fc2-000000`).
    START no longer reaches the agent (checked on staging). "Receipt exactly once" held
-   per completion, not per conversation. Fixed on staging, not on production: a later
+   per completion, not per conversation. Fixed and deployed, checked on staging: a later
    completion sends a receipt only if a detail or the email address changed. See
-   [Receipt and error-log fixes, staging](#receipt-and-error-log-fixes-staging).
+   [Receipt and error-log fixes](#receipt-and-error-log-fixes).
 6. **Dead-letter queue.** Cleared by itself: on 25 Nov 19:49 the queue was empty and both
    alarms were OK. The failed 27 Oct 16:49 event was not removed by hand.
 7. **Logged Meta message IDs contain the customer's phone number.** A `wamid` is base64
@@ -212,9 +212,10 @@ verified, and `+91XXXXXX9963` is opted in.
    before 25 Nov 19:48 are unchanged.
 8. **Unhandled errors could be logged with customer data.** The message of a failed send,
    and Strands' own log of agent output that does not parse, were written as they were.
-   Found by reading the code, not seen in the log. Fixed on staging, not on production.
+   Found by reading the code, not seen in the log. Fixed and deployed, masking
+   checked on staging.
 9. **Email replies other than receipts used the agent's internal summary as the subject.**
-   Found by reading the code; no such reply is recorded here. Fixed in the code on staging,
+   Found by reading the code; no such reply is recorded here. Fixed and deployed,
    not checked live.
 
 ## Fixes deployed 25 Nov
@@ -240,14 +241,30 @@ changed only the function's code. Roll back to
 Not checked live: the receipt email's subject, the email-only fix, and START while already
 subscribed (staging only).
 
-## Receipt and error-log fixes, staging
+## Receipt and error-log fixes
 
 [#15](https://github.com/axxess-triaxis/Omnidamus/pull/15), commit `4ef3609`, image
 `sha256:0c372bce867e3b3a92d710a23597b1e0c01a49e9f7ce69f8bb06d90bcb5b099d`, on
-`omnidamus-staging` since 25 Nov 20:42. The change set changed only the function's code and
-no parameter. Roll back to
-`sha256:1fc8dd438d0a0d22dbf8b579e3df03eed4ed700feee1cde90dfe0b3b79e30541`. **Production still
-runs `54ac872`.**
+`omnidamus-staging` since 25 Nov 20:42 and on production (`omnidamus`) since 21:43. Both change
+sets changed only the function's code and no parameter. Roll back to
+`sha256:1fc8dd438d0a0d22dbf8b579e3df03eed4ed700feee1cde90dfe0b3b79e30541`.
+
+### Production
+
+| Check (IST) | Result |
+|---|---|
+| 21:43: stack `omnidamus` | `UPDATE_COMPLETE`, running the image above |
+| 21:44: `/start` with no key and a wrong key | 401 and 401 |
+| 21:44: synthetic delivery receipt, sent to no one | Recorded |
+| 13 log events searched for stored phone numbers, raw `wamid` and errors | None found |
+| Alarms | OK |
+| A real WhatsApp message answered by this build | **Not verified** |
+
+The first attempt to create the change set hit a 500-second limit during the image upload and
+left nothing behind; the second completed. No deliberate error was raised on production, so as
+not to set off its alarm.
+
+### Staging
 
 The messages went through the staging WhatsApp topic from a made-up number, with the real
 Nova Pro model and sending captured. The agent closed the conversation on all four:

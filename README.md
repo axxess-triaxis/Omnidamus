@@ -108,12 +108,12 @@ arrived in the customer's inbox; STOP and START changed the opt-out flag.
   message IDs contained the customer's phone number. Receipt recording and clean logs
   were checked live; START while already subscribed was checked on staging only; the
   receipt email and the email-only fix have unit tests only. Log entries from before the deploy are unchanged.
-- **Fixed, on staging only (25 Nov 2026, 20:42 IST), not on production:** a question after a closed conversation could
+- **Fixed and deployed on 25 Nov 2026 (21:43 IST):** a question after a closed conversation could
   send the same receipt again; email replies other than receipts used the agent's internal
   summary as the subject; an unhandled error, or agent output that did not parse, could put
-  a phone number or message text in the log. Receipts and masked errors were checked on
-  staging with the real model; the email subject has unit tests only. Production behaves the
-  old way until it is redeployed.
+  a phone number or message text in the log. Receipts (with the real model) and masked errors
+  were checked on staging only; the email subject has unit tests only. No real message has
+  been answered by this build on production yet.
 - **No booking system.** "Confirmed" means the time is recorded in the conversation
   and the receipt; no calendar entry is created.
 - The agent's prompt has not been tuned against real conversations. The demo video

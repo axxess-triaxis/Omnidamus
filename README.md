@@ -236,4 +236,13 @@ from AWS credits: STILL is estimated at under USD 2 a month, Omnidamus keeps a R
 USD 0.50 a month, and Amazon Bedrock tokens are billed per use.
 
 <!-- readme-activity:start (generated; edits here are overwritten) -->
+## Recent changes
+
+<sub>Generated 2026-11-25 from this repository's history, last 14 days. Documentation, dependency and housekeeping changes are left out.</sub>
+
+| Date | Change |
+|---|---|
+| 2026-11-25 | [Weekly README refresh](https://github.com/axxess-triaxis/Omnidamus/pull/11) |
+| 2026-11-20 | [fix(start): grant lambda:InvokeFunction so the public /start URL is reachable](https://github.com/axxess-triaxis/Omnidamus/pull/9) |
+| 2026-11-20 | [feat: org-scoped conversations and an AXXESS start endpoint](https://github.com/axxess-triaxis/Omnidamus/pull/8) |
 <!-- readme-activity:end -->

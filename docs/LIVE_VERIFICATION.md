@@ -14,7 +14,7 @@ the customer's WhatsApp number is `+91XXXXXX7374`, the receipt mailbox is
 | Conversation opened with an approved WhatsApp template | Done, delivered | [27 Oct 16:23](#conversation-27-oct) |
 | Two-way WhatsApp chat with the agent (Nova Pro) | Done, delivered until 27 Oct 16:49 | [27 Oct 16:48-16:49](#conversation-27-oct) |
 | Conversation closes, SES receipt arrives | Done (after an IAM fix) | [Receipt](#closing-receipt) |
-| STOP / START | Opt-out and opt-in recorded; STOP confirmation delivered and read 25 Nov; START confirmation **not delivered yet** | [STOP and START](#stop-and-start) |
+| STOP / START | Opt-out and opt-in recorded; STOP and START confirmations delivered and read 25 Nov | [STOP and START](#stop-and-start) |
 | Customer replies by email | **Not done** | [Not verified](#not-verified) |
 | SMS | **Not done** (optional; Indian SMS needs DLT registration) | [Not verified](#not-verified) |
 
@@ -150,9 +150,18 @@ They reached AWS at 15:28, START first. Statuses are from CloudWatch (all `error
 | 15:28:34 | START | "Hello! How can I assist you today?" (from the agent) | `ab09d644-8c3f-40d4-8504-a8ec908d58c5` | accepted, sent, delivered, read |
 | 15:28:43 | STOP | "You won't hear from us again. Reply START if you change your mind." | `00ede2a7-a614-4e80-a464-268cc5cd2bef` | accepted, sent, delivered, read |
 
-The STOP confirmation is verified. The START confirmation ("You're subscribed again") is
-not: that phone was not opted out when its START arrived, so START went to the agent
-(open issue 5). `+91XXXXXX9963` is **opted out** as of 15:28:43.
+The STOP confirmation is verified. That phone was not opted out when its START arrived,
+so START went to the agent (open issue 5), and the 15:28:43 STOP then opted it out.
+
+At 20:06, on the fixed code ([Fixes deployed 25 Nov](#fixes-deployed-25-nov)), it sent
+START again:
+
+| Received (IST) | Message | Reply | Message ID | Statuses |
+|---|---|---|---|---|
+| 20:06:42 | START | "You're subscribed again. How can we help?" | `c770b0be-b2cf-43d6-974b-230d88a3a04a` | accepted, sent, delivered, read |
+
+The reply went out once, one second after the message. The START confirmation is
+verified, and `+91XXXXXX9963` is opted in.
 
 ## Not verified
 
@@ -174,8 +183,8 @@ not: that phone was not opted out when its START arrived, so START went to the a
    message went accepted, sent, delivered and read with `errors: []`, as recorded from
    CloudWatch on 20 Nov in [#7](https://github.com/axxess-triaxis/Omnidamus/pull/7).
    DynamoDB, read on 25 Nov, shows that turn (`a57e227d-e77b-4e7a-ae63-8e0d463042fc`).
-   On 25 Nov both replies were delivered and read. Still open: a START confirmation sent
-   after a STOP.
+   On 25 Nov both replies were delivered and read. A START confirmation sent
+   after a STOP was delivered and read at 20:06 the same day.
 2. **Delivery receipts are never recorded.** Receipts are matched on Meta's message ID,
    but turns store AWS's message ID. Status events carry AWS's ID in the top-level
    `messageId`, and failed statuses have no Meta ID at all. Seen again on 25 Nov: all
@@ -215,10 +224,13 @@ changed only the function's code. Roll back to
 | Staging, 16:44-16:55 | AXXESS cross-product test, run [45602536225](https://github.com/axxess-triaxis/AXXESSTRIAXIS/actions/runs/45602536225) | 7 of 7 passed |
 | Production, 19:48 | Stack `omnidamus` `UPDATE_COMPLETE` (19:47:59); `/start` with no key and a wrong key | 401 and 401 |
 | Production, 19:48 | Synthetic receipt, sent to no one | Recorded; 16 log events with no number, raw `wamid` or error |
-| Production | A real WhatsApp message answered by the new code | **Not verified**: none had reached AWS by 20:03 |
+| Production, 20:06 | A real START from an opted-out phone | Opted in; one reply, after one second; the founder confirmed it on the phone |
+| Production, 20:06 | That reply's receipts | accepted, sent, delivered and read, all `recorded: true` with `errors: []`; stored as `read` |
+| Production, 20:06 | 30 log events searched for phone numbers, raw `wamid`, tracebacks and agent text | None found |
+| Production, 20:08 | Alarms | OK |
 
-The founder reported on 25 Nov that START and STOP were answered at once. The wording
-matches the 15:28 replies above, which the old code sent.
+Not checked live: the receipt email's subject, the email-only fix, and START while already
+subscribed (staging only).
 
 ## Code changes made during verification
 

@@ -70,7 +70,22 @@ Parameters:
     Default: ""
     Description: Extra comma-separated E.164 numbers that belong to Triaxis (Tenant 0). Customer conversations are refused on them.
 
+  AxxessMcpUrl:
+    Type: String
+    Default: ""
+    Description: AXXESS MCP endpoint (https://<host>/api/agents/mcp). With AxxessApiKeySecretArn set, the agent reads the customer's AXXESS lead history before replying. Empty = off.
+  AxxessApiKeySecretArn:
+    Type: String
+    Default: ""
+    Description: Secrets Manager ARN of an AXXESS agent API key with the search_leads and get_lead_context capabilities. Empty = off.
+  AxxessBypassSecretArn:
+    Type: String
+    Default: ""
+    Description: Secrets Manager ARN of the Vercel deployment protection bypass secret, for a protected staging AXXESS. Empty = none.
+
 Conditions:
+  ReadAxxess: !And [!Not [!Equals [!Ref AxxessMcpUrl, ""]], !Not [!Equals [!Ref AxxessApiKeySecretArn, ""]]]
+  AxxessBypass: !Not [!Equals [!Ref AxxessBypassSecretArn, ""]]
   ReceiveEmail: !Not [!Equals [!Ref InboundEmailAddress, ""]]
   AlarmByEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
   BedrockElsewhere: !Not [!Equals [!Ref BedrockRegion, ""]]
@@ -235,6 +250,9 @@ Resources:
           OMNIDAMUS_WHATSAPP_HANDOFF_TEMPLATE: !Ref WhatsAppHandoffTemplate
           OMNIDAMUS_WHATSAPP_TEMPLATE_LANGUAGE: !Ref WhatsAppTemplateLanguage
           STILL_EVENT_BUS_ARN: !Ref StillEventBusArn
+          AXXESS_MCP_URL: !If [ReadAxxess, !Ref AxxessMcpUrl, ""]
+          AXXESS_API_KEY_SECRET_ARN: !If [ReadAxxess, !Ref AxxessApiKeySecretArn, ""]
+          AXXESS_BYPASS_SECRET_ARN: !If [AxxessBypass, !Ref AxxessBypassSecretArn, ""]
           OMNIDAMUS_OUTBOUND_MODE: !If [IsProd, !Ref AWS::NoValue, capture]
           OMNIDAMUS_START_API_KEY_SECRET_ARN: !Ref StartApiKeySecretArn
           OMNIDAMUS_TENANT0_LINES: !Ref Tenant0Lines
@@ -279,6 +297,16 @@ Resources:
               Resource:
                 - !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*
                 - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/*
+            - !If
+              - ReadAxxess
+              - Sid: AxxessApiKey
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !If
+                  - AxxessBypass
+                  - [!Ref AxxessApiKeySecretArn, !Ref AxxessBypassSecretArn]
+                  - [!Ref AxxessApiKeySecretArn]
+              - !Ref AWS::NoValue
             - !If
               - PublishToStill
               - Sid: StillEvents

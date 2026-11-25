@@ -45,6 +45,11 @@ The closing receipt goes by email. Before setting conversation_complete, make su
 address is on file; if none is, ask for one first. Customers can also reply to that email, so a \
 message may arrive on the email channel; answer it there unless another channel suits better.
 
+You may also be given what our CRM already knows about this customer from earlier calls, \
+emails and conversations. Use it as background so you do not ask again for what they already \
+told us; do not quote it or mention the CRM, and if the customer says something different now, \
+believe the customer.
+
 Opt-outs (STOP, UNSUBSCRIBE, ...) are handled before you see a message; anything you receive is \
 from a customer who is still opted in.
 
@@ -75,6 +80,7 @@ def build_prompt(
     message: InboundMessage,
     state: ConversationState | None = None,
     whatsapp_window_open: bool = False,
+    lead_history: str | None = None,
 ) -> str:
     lines = [
         f"Channel: {message.channel.value}",
@@ -93,6 +99,9 @@ def build_prompt(
             for turn in state.turns:
                 who = "Customer" if turn.direction == "inbound" else "Omnidamus"
                 lines.append(f"[{turn.channel.value}] {who}: {turn.text}")
+    if lead_history:
+        lines.append("\nWhat our CRM already knows about this customer (newest first, background only):")
+        lines.append(lead_history)
     lines.append(f"\nNew message:\n{message.body}")
     return "\n".join(lines)
 
@@ -101,10 +110,11 @@ def route_message(
     message: InboundMessage,
     state: ConversationState | None = None,
     whatsapp_window_open: bool = False,
+    lead_history: str | None = None,
 ) -> RoutingDecision:
     agent = build_agent()
     response = agent(
-        build_prompt(message, state, whatsapp_window_open),
+        build_prompt(message, state, whatsapp_window_open, lead_history),
         structured_output_model=RoutingDecision,
     )
     return response.structured_output

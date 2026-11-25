@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -90,20 +91,43 @@ def test_whatsapp_statuses_are_parsed():
     event = _wa_event({"statuses": [{"id": "wamid.X", "status": "failed", "recipient_id": "01234567890",
                                      "errors": [{"code": 131047, "title": "Re-engagement message"}]}]})
     [status] = parse_whatsapp_statuses(event)
-    assert status == {"conversation_id": "+01234567890", "provider_message_id": "wamid.X",
-                      "status": "failed", "errors": [{"code": 131047, "title": "Re-engagement message"}]}
+    # The AWS messageId, which is what the send returned and the outbound turn stores.
+    assert status == {"message_id": HEADER["messageId"], "status": "failed",
+                      "errors": [{"code": 131047, "title": "Re-engagement message"}]}
+
+
+def test_failed_status_without_meta_id_or_recipient_is_parsed():
+    from omnidamus.inbound import parse_whatsapp_statuses
+
+    event = _wa_event({"metadata": {}, "statuses": [{"id": None, "status": "failed",
+                                                     "errors": [{"code": 131037}]}]})
+    [status] = parse_whatsapp_statuses(event)
+    assert status["message_id"] == HEADER["messageId"] and status["status"] == "failed"
+
+
+def test_several_statuses_in_one_event_do_not_share_the_aws_id():
+    from omnidamus.inbound import parse_whatsapp_statuses
+
+    event = _wa_event({"statuses": [{"id": "wamid.A", "status": "sent"}, {"id": "wamid.B", "status": "read"}]})
+    assert [s["message_id"] for s in parse_whatsapp_statuses(event)] == ["wamid.A", "wamid.B"]
 
 
 def test_event_outline_has_ids_and_errors_but_no_phone_numbers():
     from omnidamus.inbound import outline_whatsapp_event
 
+    # A real Meta message ID is base64 and carries the recipient's number.
+    wamid = "wamid." + base64.b64encode(b"\x1c\x18\x0b14255550150\x15\x02\x00").decode()
     event = _wa_event({"metadata": {"display_phone_number": "12065550100"},
-                       "statuses": [{"id": "wamid.X", "status": "failed", "recipient_id": "14255550150",
-                                     "errors": [{"code": 131047}]}]})
+                       "statuses": [{"id": wamid, "status": "failed", "recipient_id": "14255550150",
+                                     "errors": [{"code": 131047, "message": "Failed for 14255550150"}]}]})
     outline = outline_whatsapp_event(event)
     assert outline["aws_message_id"] == HEADER["messageId"]
-    assert outline["changes"][0]["statuses"] == [{"id": "wamid.X", "status": "failed", "errors": [{"code": 131047}]}]
-    assert "14255550150" not in json.dumps(outline) and "12065550100" not in json.dumps(outline)
+    [status] = outline["changes"][0]["statuses"]
+    assert status["status"] == "failed"
+    assert status["errors"] == [{"code": 131047, "message": "Failed for <redacted>"}]
+    logged = json.dumps(outline)
+    assert "14255550150" not in logged and "12065550100" not in logged
+    assert wamid.removeprefix("wamid.") not in logged
 
 
 # --- SES receiving -----------------------------------------------------------

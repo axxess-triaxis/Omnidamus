@@ -159,12 +159,13 @@ def test_completion_carries_the_job_and_no_email(store, rec, monkeypatch):
         "an email given in an organization's chat never routes inbound email to it"
 
 
-def test_whatsapp_receipts_are_keyed_by_the_line_they_came_from():
+def test_whatsapp_receipts_are_keyed_by_message_not_by_customer():
     entry = {"changes": [{"value": {"metadata": {"display_phone_number": LINE_A.lstrip("+")},
                                     "statuses": [{"id": "wamid.1", "recipient_id": PHONE.lstrip("+"),
                                                   "status": "read"}]}}]}
-    [status] = inbound.parse_whatsapp_statuses(json.dumps({"whatsAppWebhookEntry": json.dumps(entry)}))
-    assert status["conversation_id"] == f"line:{LINE_A}#{PHONE}"
+    [status] = inbound.parse_whatsapp_statuses(json.dumps({"messageId": "aws-1",
+                                                           "whatsAppWebhookEntry": json.dumps(entry)}))
+    assert status == {"message_id": "aws-1", "status": "read", "errors": []}
 
 
 def test_sms_inbound_records_the_number_it_was_sent_to():

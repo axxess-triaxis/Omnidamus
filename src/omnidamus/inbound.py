@@ -21,6 +21,7 @@ from email import message_from_string
 from email import policy as email_policy
 from email.utils import parseaddr
 
+from .redact import message_ref, redact
 from .schema import Channel, InboundMessage
 
 
@@ -88,8 +89,8 @@ def _whatsapp_text(msg: dict) -> str | None:
 
 def outline_whatsapp_event(sns_message: str) -> dict:
     """A phone-number-free outline of one EUM Social event, for logging: the AWS
-    messageId, each change's field and value keys, and each status's id, status and
-    errors."""
+    messageId, each change's field and value keys, and each status's hashed Meta ID,
+    status and errors."""
 
     event = json.loads(sns_message)
     entry = event.get("whatsAppWebhookEntry")
@@ -101,15 +102,19 @@ def outline_whatsapp_event(sns_message: str) -> dict:
         changes.append({
             "field": change.get("field"),
             "value_keys": sorted(value),
-            "statuses": [{"id": s.get("id"), "status": s.get("status"), "errors": s.get("errors", [])}
+            "statuses": [{"meta_ref": message_ref(s.get("id")), "status": s.get("status"),
+                          "errors": redact(s.get("errors", []))}
                          for s in value.get("statuses", [])],
         })
     return {"aws_message_id": event.get("messageId"), "changes": changes}
 
 
 def parse_whatsapp_statuses(sns_message: str) -> list[dict]:
-    """Delivery receipts (sent / delivered / read / failed) in one EUM Social event,
-    from changes[].value.statuses[]."""
+    """Delivery receipts (accepted / sent / delivered / read / failed) in one EUM Social
+    event, from changes[].value.statuses[]. The event's own messageId is the ID the send
+    returned, so it is the one to match on; Meta's ID is a different one, and a failed
+    status can have none. An event with several statuses cannot share one AWS ID, so
+    those fall back to Meta's."""
 
     event = json.loads(sns_message)
     entry = event.get("whatsAppWebhookEntry")
@@ -118,22 +123,18 @@ def parse_whatsapp_statuses(sns_message: str) -> list[dict]:
     if not entry:
         return []
 
-    from .state import conversation_key
-
-    statuses = []
-    for change in entry.get("changes", []):
-        display = (change.get("value", {}).get("metadata") or {}).get("display_phone_number")
-        line = normalize_phone(display) if display else None
-        for status in change.get("value", {}).get("statuses", []):
-            if not status.get("id") or not status.get("recipient_id"):
-                continue
-            statuses.append({
-                "conversation_id": conversation_key(line, normalize_phone(status["recipient_id"])),
-                "provider_message_id": status["id"],
-                "status": status.get("status", "unknown"),
-                "errors": status.get("errors", []),
-            })
-    return statuses
+    found = [status for change in entry.get("changes", [])
+             for status in change.get("value", {}).get("statuses", [])]
+    aws_id = event.get("messageId") if len(found) == 1 else None
+    return [
+        {
+            "message_id": aws_id or status["id"],
+            "status": status.get("status", "unknown"),
+            "errors": status.get("errors") or [],
+        }
+        for status in found
+        if aws_id or status.get("id")
+    ]
 
 
 def parse_ses_event(sns_message: str) -> list[InboundMessage]:

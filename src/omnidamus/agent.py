@@ -66,9 +66,12 @@ def get_model() -> BedrockModel:
 def build_agent() -> Agent:
     """A fresh agent per message. Strands agents keep their own chat history, so
     reusing one across conversations would leak one customer's messages into
-    another's; the conversation's real history comes from DynamoDB instead."""
+    another's; the conversation's real history comes from DynamoDB instead.
 
-    return Agent(model=get_model(), system_prompt=SYSTEM_PROMPT)
+    callback_handler=None: the default prints the model's text to stdout, which puts
+    customer messages in CloudWatch."""
+
+    return Agent(model=get_model(), system_prompt=SYSTEM_PROMPT, callback_handler=None)
 
 
 def build_prompt(

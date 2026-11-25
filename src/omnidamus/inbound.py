@@ -22,7 +22,7 @@ from email import policy as email_policy
 from email.utils import parseaddr
 
 from .redact import message_ref, redact
-from .schema import Channel, InboundMessage
+from .schema import Channel, InboundMessage, InvalidRequest
 
 
 def normalize_phone(number: str) -> str:
@@ -30,7 +30,7 @@ def normalize_phone(number: str) -> str:
 
     digits = "".join(ch for ch in number if ch.isdigit())
     if not digits:
-        raise ValueError(f"Not a phone number: {number!r}")
+        raise InvalidRequest("Not a phone number")
     return f"+{digits}"
 
 

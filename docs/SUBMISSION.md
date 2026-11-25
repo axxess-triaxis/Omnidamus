@@ -56,8 +56,8 @@ Architecture diagram: [ARCHITECTURE.md](ARCHITECTURE.md).
   hasn't written in the last 24 hours. Omnidamus tracks the window per
   conversation and switches to an approved template or a click-to-chat link.
 - **Exactly-once outcomes on an at-least-once bus.** SNS can deliver twice. Inbound
-  messages are de-duplicated by provider ID, and the receipt is sent at most once
-  per conversation.
+  messages are de-duplicated by provider ID, and a receipt is sent again only when
+  its details or address changed.
 - **One conversation, three identities.** Phone numbers key the conversation, and
   email replies find it through a pointer from the sender's address.
 

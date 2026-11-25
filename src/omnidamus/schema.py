@@ -8,6 +8,10 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 
+class InvalidRequest(ValueError):
+    """A caller's request that cannot be acted on. Its message is logged: no customer data."""
+
+
 class Channel(str, Enum):
     SMS_RCS = "sms_rcs"
     WHATSAPP = "whatsapp"

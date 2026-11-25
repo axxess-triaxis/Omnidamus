@@ -247,7 +247,111 @@ def test_new_message_after_completion_reopens(store, rec):
     again = RoutingDecision(summary="again", reply_channel=Channel.SMS_RCS, reply_text="Hi again")
     result, _ = _run(store, rec, _msg(Channel.SMS_RCS, "one more thing", "sms-2"), again)
     assert result["status"] == "open"
-    assert store.get(PHONE).receipt_message_id is None
+
+
+# --- one receipt per set of details -----------------------------------------
+
+def _done(text, channel=Channel.WHATSAPP, **facts):
+    return RoutingDecision(summary="internal note", reply_channel=channel, reply_text=text,
+                           conversation_complete=True, key_facts=facts)
+
+
+def _booked(store, rec, **extra):
+    _run(store, rec, _msg(Channel.WHATSAPP, "6 pm, c@example.com", "wamid.1"),
+         _done("Booked.", email="c@example.com", demo_time="6 pm IST", **extra))
+    assert len(rec.emails) == 1
+
+
+@pytest.mark.parametrize("facts", [
+    {},
+    {"demo_time": "6 pm IST"},
+    {"demo_time": " 6 PM  ist"},
+    {"confirmed_time": "6 pm IST"},
+    {"email": "C@Example.com"},
+])
+def test_question_after_completion_is_answered_without_another_receipt(store, rec, facts):
+    _booked(store, rec)
+    result, _ = _run(store, rec, _msg(Channel.WHATSAPP, "What time is my demo?", "wamid.2"),
+                     _done("6 pm IST.", **facts))
+    assert result["status"] == "complete"
+    assert rec.sent[-1] == (Channel.WHATSAPP, PHONE, "6 pm IST.")
+    assert len(rec.emails) == 1
+    assert store.get(PHONE).receipt_message_id == "ses-1"
+
+
+@pytest.mark.parametrize("facts", [
+    {"demo_time": "7 pm IST"},
+    {"location": "Guwahati"},
+    {"email": "new@example.com"},
+])
+def test_changed_details_get_a_new_receipt(store, rec, facts):
+    _booked(store, rec)
+    _run(store, rec, _msg(Channel.WHATSAPP, "Change it", "wamid.2"), _done("Updated.", **facts))
+    assert len(rec.emails) == 2
+    assert rec.emails[-1][0] == facts.get("email", "c@example.com")
+    _run(store, rec, _msg(Channel.WHATSAPP, "Thanks", "wamid.3"), _done("Welcome.", **facts))
+    assert len(rec.emails) == 2
+
+
+def test_swapped_details_get_a_new_receipt(store, rec):
+    _booked(store, rec, pickup="Monday", dropoff="Tuesday")
+    _run(store, rec, _msg(Channel.WHATSAPP, "Swap them", "wamid.2"),
+         _done("Swapped.", pickup="Tuesday", dropoff="Monday"))
+    assert len(rec.emails) == 2
+
+
+def test_failed_receipt_is_retried_at_the_next_completion(store, rec):
+    def failing_email(to, subject, body_text):
+        raise service.ses_email.SesSendError("AccessDenied")
+
+    service.handle_inbound(_msg(Channel.WHATSAPP, "6 pm", "wamid.1"), store, send=rec.send,
+                           route=lambda *_: _done("Booked.", email="c@example.com"),
+                           send_email=failing_email, now=NOW)
+    _run(store, rec, _msg(Channel.WHATSAPP, "Thanks", "wamid.2"), _done("Welcome."))
+    assert len(rec.emails) == 1
+
+
+def test_failed_update_receipt_is_retried_and_not_reported_as_sent(store, rec):
+    events = []
+
+    def failing_email(to, subject, body_text):
+        raise service.ses_email.SesSendError("AccessDenied")
+
+    _booked(store, rec)
+    service.handle_inbound(_msg(Channel.WHATSAPP, "7 pm", "wamid.2"), store, send=rec.send,
+                           route=lambda *_: _done("Moved.", demo_time="7 pm IST"),
+                           send_email=failing_email, now=NOW,
+                           publish=lambda source, kind, data, key: events.append(data))
+    assert events[-1]["receipt_sent"] is False
+    _run(store, rec, _msg(Channel.WHATSAPP, "Thanks", "wamid.3"), _done("Welcome."))
+    assert len(rec.emails) == 2
+
+
+def test_email_question_after_the_receipt_is_answered_by_email(store, rec):
+    _booked(store, rec)
+    _run(store, rec, _email("What time?", sender="c@example.com"),
+         _done("6 pm IST.", channel=Channel.EMAIL))
+    assert rec.sent[-1] == (Channel.EMAIL, "c@example.com", "6 pm IST.")
+    assert len(rec.emails) == 1
+
+
+def test_answer_replaced_by_a_template_still_goes_out_in_a_receipt(store, rec, monkeypatch):
+    monkeypatch.setenv("OMNIDAMUS_WHATSAPP_HANDOFF_TEMPLATE", "continue_chat")
+    _booked(store, rec)
+    late = NOW + timedelta(hours=50)
+    _run(store, rec, _msg(Channel.SMS_RCS, "What time?", "sms-2", at=late),
+         _done("6 pm IST."), now=late)
+    assert rec.sent[-1][2].startswith("template:continue_chat")
+    assert rec.emails[-1][2].startswith("6 pm IST.") and len(rec.emails) == 2
+
+
+def test_late_whatsapp_question_after_the_receipt_is_still_answered(store, rec):
+    _booked(store, rec)
+    late = NOW + timedelta(hours=50)
+    _run(store, rec, _msg(Channel.WHATSAPP, "What time?", "wamid.2", at=NOW),
+         _done("6 pm IST.", channel=Channel.EMAIL), now=late)
+    assert rec.sent[-1] == (Channel.EMAIL, "c@example.com", "6 pm IST.")
+    assert len(rec.emails) == 1
 
 
 # --- opt-out ---------------------------------------------------------------

@@ -14,13 +14,13 @@ cannot enforce on its own and does the sending:
 - STOP (or UNSUBSCRIBE, ...) on any channel ends all contact; START opts back in, and
   START from someone who never opted out gets a fixed reply. The agent sees neither.
 - When the agent marks the conversation complete, the closing receipt goes out by
-  Amazon SES once per completion (tracked in state). A customer who wrote on SMS or
-  WhatsApp is also answered there.
+  Amazon SES. A later completion sends another only if a fact or the email address
+  changed (receipt_due). A customer who wrote on SMS or WhatsApp is also answered there.
 - SNS redeliveries are dropped by the channel's own message ID.
 - WhatsApp delivery receipts are stored by message ID and shown on the matching outbound
   turn the next time the conversation is saved.
 - Log lines written here carry no phone number, email address or Meta message ID
-  (redact.py). A traceback from an unhandled send error is not covered.
+  (redact.py). Unhandled errors are masked in lambda_handler.py.
 - A completed conversation is published to STILL, the Triaxis cross-product event
   bus, as triaxis.omnidamus conversation.completed.v1 (a no-op unless
   STILL_EVENT_BUS_ARN is set; never blocks the reply or the save).
@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from . import router, still_emit
 from .channels import ses_email, whatsapp_social
 from .redact import message_ref, redact
-from .schema import Channel, InboundMessage, RoutingDecision
+from .schema import Channel, InboundMessage, InvalidRequest, RoutingDecision
 from .state import ConversationState, ConversationStore, conversation_key, is_tenant0_line
 
 log = logging.getLogger(__name__)
@@ -97,6 +97,27 @@ def receipt_text(state: ConversationState, decision: RoutingDecision) -> tuple[s
         lines += ["", "Details:"]
         lines += [f"- {label[:1].upper()}{label[1:]}: {value}" for label, value in facts]
     return RECEIPT_SUBJECT, "\n".join(lines)
+
+
+def _receipt_facts(state: ConversationState) -> dict[str, str]:
+    """What a receipt sent now would say, worded so that only real changes compare unequal."""
+    facts = {**state.key_facts, "email": state.customer_email or ""}
+    return {k: " ".join(str(v).casefold().split()) for k, v in facts.items()}
+
+
+def receipt_due(state: ConversationState) -> bool:
+    """Whether a completed conversation needs a receipt the customer does not already have.
+
+    The agent may file a known fact again under a new key, so a new key counts only when its
+    value was nowhere in the last receipt."""
+
+    if state.organization_id or not state.customer_email:
+        return False
+    sent = state.receipt_facts
+    if not state.receipt_message_id or sent is None:
+        return True
+    return any(value != sent[key] if key in sent else value not in sent.values()
+               for key, value in _receipt_facts(state).items())
 
 
 def _default_route(message, state, window_open):
@@ -249,7 +270,6 @@ def handle_inbound(
     if state.status == "complete":
         # The customer wrote again after the receipt: treat it as a new exchange.
         state.status = "open"
-        state.receipt_message_id = None
     state.current_channel = message.channel
 
     window_open = whatsapp_window_open(state, now)
@@ -260,12 +280,15 @@ def handle_inbound(
     if email and _EMAIL.match(email):
         state.customer_email = email
     state.key_facts.update(decision.key_facts)
+    send_receipt = decision.conversation_complete and receipt_due(state)
 
     target = decision.handoff_to or decision.reply_channel
     text = decision.reply_text
     handoff_template = os.environ.get("OMNIDAMUS_WHATSAPP_HANDOFF_TEMPLATE")
     if target is Channel.WHATSAPP and not window_open and handoff_template:
         target = None  # handled by the template below
+        if decision.conversation_complete and state.customer_email and not state.organization_id:
+            send_receipt = True  # the template carries no answer, so the receipt does
     elif target is Channel.WHATSAPP and not window_open:
         link = whatsapp_link()
         target = message.channel if message.channel is not Channel.WHATSAPP else Channel.SMS_RCS
@@ -276,26 +299,27 @@ def handle_inbound(
         target = message.channel
     elif (target is Channel.EMAIL and decision.conversation_complete
           and (window_open or message.channel is not Channel.WHATSAPP)):
-        # The receipt below covers the email; answer on the channel they wrote on too.
+        # Any receipt below covers the email; answer on the channel they wrote on too.
         target = message.channel
 
     if target is None:
         outbox.template(handoff_template)
         state.current_channel = Channel.WHATSAPP
-    elif not (decision.conversation_complete and target is Channel.EMAIL):
-        # A customer who wrote by email gets the receipt below as their answer.
+    elif not (send_receipt and target is Channel.EMAIL):
+        # When a receipt is due, a customer answered by email gets it as their answer.
         outbox.text(target, text)
         state.current_channel = target
 
     if decision.conversation_complete:
         state.status = "complete"
-        if state.receipt_message_id:
-            log.info("Receipt already sent")
-        elif state.organization_id:
+        if state.organization_id:
             log.info("No email receipt for an organization's conversation")
         elif not state.customer_email:
             log.warning("Conversation complete but no email on file")
+        elif not send_receipt:
+            log.info("Receipt already sent")
         else:
+            state.receipt_message_id = None  # the earlier receipt no longer holds
             subject, body = receipt_text(state, decision)
             try:
                 receipt_id = send_email(state.customer_email, subject=subject, body_text=body)
@@ -306,6 +330,7 @@ def handle_inbound(
                 log.error("Receipt not sent: %s", redact(str(error)))
             else:
                 state.receipt_message_id = receipt_id
+                state.receipt_facts = _receipt_facts(state)
                 state.add_turn("outbound", Channel.EMAIL, subject, provider_message_id=receipt_id)
                 outbox.sent.append({"channel": Channel.EMAIL.value, "message_id": receipt_id})
 
@@ -386,9 +411,9 @@ def start_conversation(
     if existing and existing.opted_out:
         return {"conversation_id": key, "skipped": "opted_out"}
     if channel is Channel.WHATSAPP and not template:
-        raise ValueError("A WhatsApp conversation must open with an approved template")
+        raise InvalidRequest("A WhatsApp conversation must open with an approved template")
     if channel is not Channel.WHATSAPP and not notification:
-        raise ValueError("An SMS/RCS conversation needs notification text")
+        raise InvalidRequest("An SMS/RCS conversation needs notification text")
 
     state = ConversationState(
         conversation_id=key,

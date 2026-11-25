@@ -12,6 +12,9 @@ from .channels import ses_email, sms_rcs, whatsapp_social
 from .schema import Channel, RoutingDecision
 
 
+EMAIL_SUBJECT = "Our conversation"
+
+
 class UnroutableChannelError(RuntimeError):
     pass
 
@@ -31,7 +34,7 @@ def dispatch_reply(to_address: str, decision: RoutingDecision, *,
     if decision.reply_channel is Channel.EMAIL:
         return ses_email.send_email(
             to_address,
-            subject=decision.summary,
+            subject=EMAIL_SUBJECT,  # the summary is the agent's note to itself
             body_text=decision.reply_text,
         )
     raise UnroutableChannelError(f"Unhandled channel: {decision.reply_channel!r}")

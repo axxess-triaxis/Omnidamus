@@ -56,8 +56,8 @@ them and `cfn-lint` on every PR):**
   - conversations can open on WhatsApp with an approved template
   - STOP/UNSUBSCRIBE on any channel ends all contact, and START opts back in
   - SNS redeliveries are dropped
-  - WhatsApp delivery receipts are parsed and logged (matching them to stored
-    messages does not work yet; see below)
+  - WhatsApp delivery receipts are stored by message ID and shown on the matching
+    message (not deployed yet; see below)
   - the closing receipt goes out by SES once per completed exchange, with Reply-To
     set so the customer can answer by email
   - a completed exchange is published to STILL, the Triaxis cross-product event bus,
@@ -100,10 +100,12 @@ arrived in the customer's inbox; STOP and START changed the opt-out flag.
 - **SMS/RCS.** No number; Indian SMS needs DLT registration.
 - **Claude on Bedrock.** The template's default model could not be enabled (AWS
   Marketplace payment error), so the live stack uses Amazon Nova Pro.
-- **Known defects found live:** delivery receipts never match a stored message; the
-  receipt's subject is the agent's internal summary; a question after a closed
-  conversation can be answered by email only; START while already subscribed goes to
-  the agent and can send another receipt.
+- **Defects found live, fixed in code and tests but not deployed:** delivery receipts
+  never matched a stored message; the receipt's subject was the agent's internal summary;
+  a question after a closed conversation could be answered by email only; START while
+  already subscribed went to the agent and could send another receipt; logged Meta
+  message IDs contained the customer's phone number. The live stack still behaves the
+  old way until it is redeployed, and existing log entries are not changed by the fix.
 - **No booking system.** "Confirmed" means the time is recorded in the conversation
   and the receipt; no calendar entry is created.
 - The agent's prompt has not been tuned against real conversations. The demo video

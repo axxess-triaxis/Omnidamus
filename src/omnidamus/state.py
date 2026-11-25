@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 import boto3
+from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, Field
 
@@ -28,6 +29,7 @@ from .schema import Channel
 MAX_TURNS = 20
 MAX_PROCESSED_IDS = 50
 TTL_SECONDS = 30 * 24 * 3600
+DELIVERY_RANK = {"accepted": 0, "sent": 1, "delivered": 2, "read": 3, "failed": 4}
 
 
 def _now() -> datetime:
@@ -40,7 +42,7 @@ class Turn(BaseModel):
     text: str
     at: datetime = Field(default_factory=_now)
     provider_message_id: str | None = None
-    status: str | None = None  # WhatsApp delivery status: sent / delivered / read / failed
+    status: str | None = None  # WhatsApp delivery status (see DELIVERY_RANK)
 
 
 class ConversationState(BaseModel):
@@ -80,13 +82,6 @@ class ConversationState(BaseModel):
         )
         del self.turns[:-MAX_TURNS]
 
-    def set_status(self, provider_message_id: str, status: str) -> bool:
-        for turn in reversed(self.turns):
-            if turn.provider_message_id == provider_message_id:
-                turn.status = status
-                return True
-        return False
-
     def mark_processed(self, provider_message_id: str) -> None:
         self.processed_message_ids.append(provider_message_id)
         del self.processed_message_ids[:-MAX_PROCESSED_IDS]
@@ -96,7 +91,8 @@ class ConversationState(BaseModel):
 
 
 class ConversationConflictError(RuntimeError):
-    """The conversation changed between read and write; re-read and retry."""
+    """The conversation changed between read and write; re-read and retry. Carries no
+    conversation ID: that is the customer's phone number, and this message is logged."""
 
 
 class ConversationStore:
@@ -144,7 +140,7 @@ class ConversationStore:
         except ClientError as exc:
             state.version = expected
             if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                raise ConversationConflictError(state.conversation_id) from exc
+                raise ConversationConflictError("The conversation changed since it was read") from exc
             raise
 
     # Inbound email carries an address, not a phone number. A small pointer item
@@ -162,6 +158,50 @@ class ConversationStore:
     def find_by_email(self, email: str) -> str | None:
         item = self._table.get_item(Key={"conversation_id": _email_key(email)}).get("Item")
         return item["points_to"] if item else None
+
+
+    # A delivery receipt is its own item ("delivery#<message id>"), not a write to the
+    # conversation: receipts arrive while a reply is still being composed, and bumping the
+    # conversation's version then would fail that reply's save after it was already sent.
+
+    def record_delivery(self, message_id: str, status: str) -> bool:
+        """Keep the furthest status seen: Meta can send "read" before "delivered".
+        False when a later status is already stored or this one is unknown."""
+
+        rank = DELIVERY_RANK.get(status)
+        if rank is None:
+            return False
+        try:
+            self._table.put_item(
+                Item={
+                    "conversation_id": _delivery_key(message_id),
+                    "status": status,
+                    "rank": rank,
+                    "expires_at": int(time.time()) + TTL_SECONDS,
+                },
+                ConditionExpression=Attr("conversation_id").not_exists() | Attr("rank").lt(rank),
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+        return True
+
+    def delivery_status(self, message_id: str) -> str | None:
+        item = self._table.get_item(Key={"conversation_id": _delivery_key(message_id)}).get("Item")
+        return item["status"] if item else None
+
+    def refresh_delivery(self, state: ConversationState) -> None:
+        """Copy stored receipts onto the conversation's outbound WhatsApp turns."""
+
+        for turn in state.turns:
+            if (turn.direction == "outbound" and turn.channel is Channel.WHATSAPP
+                    and turn.provider_message_id and turn.status not in ("read", "failed")):
+                turn.status = self.delivery_status(turn.provider_message_id) or turn.status
+
+
+def _delivery_key(message_id: str) -> str:
+    return f"delivery#{message_id}"
 
 
 def _email_key(email: str) -> str:

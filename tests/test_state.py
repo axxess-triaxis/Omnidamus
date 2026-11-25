@@ -50,3 +50,10 @@ def test_turns_and_processed_ids_are_bounded():
     assert len(state.turns) == MAX_TURNS
     assert state.turns[-1].text == str(MAX_TURNS + 4)
     assert state.already_processed(f"m{MAX_TURNS + 4}")
+
+
+def test_conflict_error_does_not_name_the_customer(store):
+    store.save(ConversationState(conversation_id="+15550001111", customer_phone="+15550001111"))
+    with pytest.raises(ConversationConflictError) as excinfo:
+        store.save(ConversationState(conversation_id="+15550001111", customer_phone="+15550001111"))
+    assert "5550001111" not in str(excinfo.value)

@@ -11,11 +11,16 @@ cannot enforce on its own and does the sending:
   on the current channel with a click-to-chat link.
 - On a handoff, the reply is sent on the channel the conversation is moving to (one
   message, not the same text twice).
-- STOP (or UNSUBSCRIBE, ...) on any channel ends all contact; START opts back in.
+- STOP (or UNSUBSCRIBE, ...) on any channel ends all contact; START opts back in, and
+  START from someone who never opted out gets a fixed reply. The agent sees neither.
 - When the agent marks the conversation complete, the closing receipt goes out by
-  Amazon SES exactly once per conversation (tracked in state).
+  Amazon SES once per completion (tracked in state). A customer who wrote on SMS or
+  WhatsApp is also answered there.
 - SNS redeliveries are dropped by the channel's own message ID.
-- WhatsApp delivery receipts update the matching outbound turn.
+- WhatsApp delivery receipts are stored by message ID and shown on the matching outbound
+  turn the next time the conversation is saved.
+- Log lines written here carry no phone number, email address or Meta message ID
+  (redact.py). A traceback from an unhandled send error is not covered.
 - A completed conversation is published to STILL, the Triaxis cross-product event
   bus, as triaxis.omnidamus conversation.completed.v1 (a no-op unless
   STILL_EVENT_BUS_ARN is set; never blocks the reply or the save).
@@ -37,6 +42,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import router, still_emit
 from .channels import ses_email, whatsapp_social
+from .redact import message_ref, redact
 from .schema import Channel, InboundMessage, RoutingDecision
 from .state import ConversationState, ConversationStore, conversation_key, is_tenant0_line
 
@@ -48,6 +54,8 @@ OPT_OUT_WORDS = {"stop", "stopall", "unsubscribe", "cancel", "end", "quit", "opt
 OPT_IN_WORDS = {"start", "unstop", "subscribe"}
 OPT_OUT_CONFIRMATION = "You won't hear from us again. Reply START if you change your mind."
 OPT_IN_CONFIRMATION = "You're subscribed again. How can we help?"
+ALREADY_OPTED_IN = "You're subscribed. How can we help?"
+RECEIPT_SUBJECT = "Summary of our conversation"
 
 RouteFn = Callable[[InboundMessage, ConversationState, bool], RoutingDecision]
 SendFn = Callable[[str, RoutingDecision], str]
@@ -82,14 +90,13 @@ def address_for(channel: Channel, state: ConversationState) -> str | None:
 
 
 def receipt_text(state: ConversationState, decision: RoutingDecision) -> tuple[str, str]:
-    subject = f"Confirmation: {decision.summary}"[:120]
-    lines = [decision.summary, ""]
-    if state.key_facts:
-        lines.append("Details:")
-        lines.extend(f"- {k}: {v}" for k, v in state.key_facts.items() if k != "email")
-        lines.append("")
-    lines.append(decision.reply_text)
-    return subject, "\n".join(lines)
+    # decision.summary is the agent's note to itself, so only the reply is used here.
+    lines = [decision.reply_text]
+    facts = [(k.replace("_", " "), v) for k, v in state.key_facts.items() if k != "email"]
+    if facts:
+        lines += ["", "Details:"]
+        lines += [f"- {label[:1].upper()}{label[1:]}: {value}" for label, value in facts]
+    return RECEIPT_SUBJECT, "\n".join(lines)
 
 
 def _default_route(message, state, window_open):
@@ -189,7 +196,7 @@ def handle_inbound(
     conversation_id = _resolve_conversation(message, store)
     if not conversation_id:
         # Email from an address no conversation knows: never start one from it.
-        log.info("No conversation for %s on %s; dropped", message.from_address, message.channel.value)
+        log.info("Message on %s from an unknown sender; dropped", message.channel.value)
         return {"skipped": "unknown_sender"}
 
     state = store.get(conversation_id)
@@ -205,9 +212,10 @@ def handle_inbound(
     )
 
     if message.provider_message_id and state.already_processed(message.provider_message_id):
-        log.info("Dropping duplicate %s", message.provider_message_id)
+        log.info("Dropping duplicate %s", message_ref(message.provider_message_id))
         return {"conversation_id": state.conversation_id, "skipped": "duplicate"}
 
+    store.refresh_delivery(state)
     if message.channel is Channel.WHATSAPP:
         state.last_whatsapp_inbound_at = message.received_at
     state.add_turn("inbound", message.channel, message.body)
@@ -233,6 +241,10 @@ def handle_inbound(
             return {"conversation_id": state.conversation_id, "status": "opted_in", "sent": outbox.sent}
         store.save(state)
         return {"conversation_id": state.conversation_id, "skipped": "opted_out"}
+    if keyword in OPT_IN_WORDS:
+        outbox.text(message.channel, ALREADY_OPTED_IN)
+        store.save(state)
+        return {"conversation_id": state.conversation_id, "status": "already_opted_in", "sent": outbox.sent}
 
     if state.status == "complete":
         # The customer wrote again after the receipt: treat it as a new exchange.
@@ -262,32 +274,36 @@ def handle_inbound(
     elif target is Channel.EMAIL and (not state.customer_email or state.organization_id):
         # Organizations do not send email through Triaxis's address.
         target = message.channel
+    elif (target is Channel.EMAIL and decision.conversation_complete
+          and (window_open or message.channel is not Channel.WHATSAPP)):
+        # The receipt below covers the email; answer on the channel they wrote on too.
+        target = message.channel
 
     if target is None:
         outbox.template(handoff_template)
         state.current_channel = Channel.WHATSAPP
     elif not (decision.conversation_complete and target is Channel.EMAIL):
-        # A completed conversation heading to email gets the receipt below instead.
+        # A customer who wrote by email gets the receipt below as their answer.
         outbox.text(target, text)
         state.current_channel = target
 
     if decision.conversation_complete:
         state.status = "complete"
         if state.receipt_message_id:
-            log.info("Receipt already sent for %s", state.conversation_id)
+            log.info("Receipt already sent")
         elif state.organization_id:
             log.info("No email receipt for an organization's conversation")
         elif not state.customer_email:
-            log.warning("Conversation %s complete but no email on file", state.conversation_id)
+            log.warning("Conversation complete but no email on file")
         else:
             subject, body = receipt_text(state, decision)
             try:
                 receipt_id = send_email(state.customer_email, subject=subject, body_text=body)
-            except ses_email.SesSendError:
+            except ses_email.SesSendError as error:
                 # The reply has already gone out: save the turn anyway, so a Lambda
                 # retry neither loses it nor sends the reply again. receipt_message_id
                 # stays empty, so the next completion tries the receipt again.
-                log.exception("Receipt for %s not sent", state.conversation_id)
+                log.error("Receipt not sent: %s", redact(str(error)))
             else:
                 state.receipt_message_id = receipt_id
                 state.add_turn("outbound", Channel.EMAIL, subject, provider_message_id=receipt_id)
@@ -309,22 +325,15 @@ def handle_inbound(
 
 
 def apply_whatsapp_status(status: dict, store: ConversationStore) -> bool:
-    """Record a WhatsApp delivery receipt on the outbound turn it belongs to.
-    Returns False when the message isn't in the conversation's recent turns."""
+    """Store a WhatsApp delivery receipt under the ID of the message it is for. Returns
+    False when it adds nothing, such as "delivered" arriving after "read"."""
 
-    if status["status"] == "failed":
-        log.warning("WhatsApp delivery failed for %s: %s",
-                    status["provider_message_id"], status.get("errors"))
-    state = store.get(status["conversation_id"])
-    matched = state is not None and state.set_status(status["provider_message_id"], status["status"])
-    # No phone number here: the message ID and outcome are enough to trace a delivery.
-    log.info(json.dumps({"whatsapp_status": status["status"],
-                         "meta_message_id": status["provider_message_id"],
-                         "errors": status.get("errors", []), "matched_turn": matched}))
-    if not matched:
-        return False
-    store.save(state)
-    return True
+    recorded = store.record_delivery(status["message_id"], status["status"])
+    log.log(logging.WARNING if status["status"] == "failed" else logging.INFO,
+            json.dumps({"whatsapp_status": status["status"],
+                        "message_ref": message_ref(status["message_id"]),
+                        "errors": redact(status.get("errors", [])), "recorded": recorded}))
+    return recorded
 
 
 class StartRefused(ValueError):

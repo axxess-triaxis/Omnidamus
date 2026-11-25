@@ -75,7 +75,7 @@ def test_unconfigured_topics_are_not_allowlisted(monkeypatch):
 
 
 def test_whatsapp_statuses_are_applied():
-    status = {"conversation_id": "+1555", "provider_message_id": "wamid.1", "status": "read", "errors": []}
+    status = {"message_id": "aws-1", "status": "read", "errors": []}
     with patch("omnidamus.sns_verify.verify"), \
          patch("omnidamus.inbound.parse_whatsapp_event", return_value=[]), \
          patch("omnidamus.inbound.parse_whatsapp_statuses", return_value=[status]), \

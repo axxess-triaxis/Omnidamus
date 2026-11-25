@@ -124,8 +124,11 @@ def test_completion_sends_receipt_to_email_once(store, rec):
     assert rec.sent[-1] == (Channel.WHATSAPP, PHONE, "Booked. A receipt is on its way.")
     [(to, subject, body)] = rec.emails
     assert to == "cust@example.com"
-    assert "Pickup booked for Fri 3pm" in subject
-    assert "time: Fri 3pm" in body and "email:" not in body
+    # The summary is the agent's internal note and never reaches the customer.
+    assert subject == service.RECEIPT_SUBJECT
+    assert "Pickup booked" not in subject + body
+    assert body.startswith("Booked. A receipt is on its way.")
+    assert "- Time: Fri 3pm" in body and "email" not in body.lower()
     assert store.get(PHONE).receipt_message_id == "ses-1"
 
 
@@ -149,6 +152,71 @@ def test_failed_receipt_still_saves_the_turn(store, rec):
     retry, _ = _run(store, rec, message, decision)
     assert retry["skipped"] == "duplicate"
     assert len(rec.sent) == 1
+
+
+def test_receipt_labels_facts_readably(store, rec):
+    decision = RoutingDecision(summary="Remind the customer and close", reply_channel=Channel.WHATSAPP,
+                               reply_text="See you then.", conversation_complete=True,
+                               key_facts={"demo_time": "tomorrow, 6 pm IST", "email": "c@example.com"})
+    _run(store, rec, _msg(Channel.WHATSAPP, "ok", "wamid.1"), decision)
+    [(_, _, body)] = rec.emails
+    assert "- Demo time: tomorrow, 6 pm IST" in body
+
+
+def test_question_closed_by_email_is_also_answered_where_it_was_asked(store, rec):
+    decision = RoutingDecision(summary="remind and close", reply_channel=Channel.WHATSAPP,
+                               handoff_to=Channel.EMAIL, reply_text="Your demo is at 6 pm IST.",
+                               conversation_complete=True, key_facts={"email": "c@example.com"})
+    _run(store, rec, _msg(Channel.WHATSAPP, "What time is my demo?", "wamid.1"), decision)
+    assert rec.sent == [(Channel.WHATSAPP, PHONE, "Your demo is at 6 pm IST.")]
+    assert len(rec.emails) == 1
+
+
+def test_late_whatsapp_message_closed_by_email_gets_only_the_receipt(store, rec):
+    decision = RoutingDecision(summary="s", reply_channel=Channel.EMAIL, reply_text="6 pm IST",
+                               conversation_complete=True, key_facts={"email": "c@example.com"})
+    late = NOW + timedelta(hours=25)
+    _run(store, rec, _msg(Channel.WHATSAPP, "What time?", "wamid.1"), decision, now=late)
+    assert rec.sent == []  # the 24-hour window is closed, so WhatsApp would refuse free text
+    assert len(rec.emails) == 1
+
+
+def test_email_exchange_closed_by_email_gets_only_the_receipt(store, rec):
+    service.start_conversation(PHONE, store, notification="Pickup ready",
+                               email="cust@example.com", send=rec.send)
+    decision = RoutingDecision(summary="done", reply_channel=Channel.EMAIL, reply_text="Moved to 4pm",
+                               conversation_complete=True)
+    _run(store, rec, _email("4pm please"), decision)
+    assert [channel for channel, *_ in rec.sent] == [Channel.SMS_RCS]  # only the opening message
+    [(_, _, body)] = rec.emails
+    assert body.startswith("Moved to 4pm")
+
+
+def test_receipt_failure_is_logged_without_addresses(store, rec, caplog):
+    def failing_email(to, subject, body_text):
+        raise service.ses_email.SesSendError(f"MessageRejected: {to} for {PHONE}")
+
+    decision = RoutingDecision(summary="s", reply_channel=Channel.WHATSAPP, reply_text="ok",
+                               conversation_complete=True, key_facts={"email": "cust@example.com"})
+    with caplog.at_level("INFO"):
+        service.handle_inbound(_msg(Channel.WHATSAPP, "x", "wamid.1"), store, route=lambda *_: decision,
+                               send=rec.send, send_email=failing_email, now=NOW)
+    assert "MessageRejected" in caplog.text
+    assert PHONE.lstrip("+") not in caplog.text and "cust@example.com" not in caplog.text
+
+
+def test_duplicates_and_unknown_senders_are_logged_without_identifiers(store, rec, caplog):
+    decision = RoutingDecision(summary="s", reply_channel=Channel.WHATSAPP, reply_text="hi")
+    with caplog.at_level("INFO"):
+        for _ in range(2):
+            _run(store, rec, _msg(Channel.WHATSAPP, "hello", "wamid.SECRETID"), decision)
+        _run(store, rec, _email("hello", sender="stranger@example.com"), decision)
+        _run(store, rec, _msg(Channel.WHATSAPP, "bye", "wamid.2"),
+             decision.model_copy(update={"conversation_complete": True}))
+    assert "duplicate" in caplog.text and "unknown sender" in caplog.text
+    assert "no email on file" in caplog.text
+    for secret in ("SECRETID", "stranger@example.com", PHONE):
+        assert secret not in caplog.text
 
 
 def test_completion_without_email_sends_no_receipt(store, rec):
@@ -210,6 +278,30 @@ def test_start_opts_back_in(store, rec):
     result, _ = _run(store, rec, _msg(Channel.WHATSAPP, "START", "wamid.2"), None)
     assert result["status"] == "opted_in"
     assert not store.get(PHONE).opted_out
+
+
+def test_start_while_subscribed_never_reaches_the_agent(store, rec):
+    done = RoutingDecision(summary="done", reply_channel=Channel.WHATSAPP, reply_text="Booked",
+                           conversation_complete=True, key_facts={"email": "c@example.com"})
+    _run(store, rec, _msg(Channel.WHATSAPP, "book it", "wamid.1"), done)
+    result = service.handle_inbound(_msg(Channel.WHATSAPP, "START", "wamid.2"), store, route=_never_route,
+                                    send=rec.send, send_email=rec.send_email, now=NOW)
+    assert result["status"] == "already_opted_in"
+    assert rec.sent[-1] == (Channel.WHATSAPP, PHONE, service.ALREADY_OPTED_IN)
+    assert len(rec.emails) == 1 and store.get(PHONE).status == "complete"
+
+
+def test_start_from_a_new_phone_never_reaches_the_agent(store, rec):
+    result = service.handle_inbound(_msg(Channel.WHATSAPP, "Start", "wamid.1"), store, route=_never_route,
+                                    send=rec.send, now=NOW)
+    assert result["status"] == "already_opted_in"
+    assert store.get(PHONE).last_whatsapp_inbound_at == NOW
+
+
+def test_sentence_containing_start_still_reaches_the_agent(store, rec):
+    decision = RoutingDecision(summary="s", reply_channel=Channel.WHATSAPP, reply_text="At 9")
+    result, _ = _run(store, rec, _msg(Channel.WHATSAPP, "When does it start?", "wamid.1"), decision)
+    assert result["status"] == "open"
 
 
 def test_cannot_start_conversation_with_opted_out_customer(store, rec):
@@ -276,26 +368,51 @@ def test_email_given_in_chat_links_for_later_replies(store, rec):
 
 # --- delivery receipts -----------------------------------------------------
 
-def test_whatsapp_status_updates_outbound_turn(store, rec):
+def _status(message_id, status, errors=()):
+    return {"message_id": message_id, "status": status, "errors": list(errors)}
+
+
+def test_whatsapp_status_reaches_the_outbound_turn(store, rec):
     out = service.start_conversation(PHONE, store, channel=Channel.WHATSAPP, template="demo_request",
                                      send=rec.send, send_template=rec.send_template)
-    status = {"conversation_id": PHONE, "provider_message_id": out["message_id"],
-              "status": "read", "errors": []}
-    assert service.apply_whatsapp_status(status, store) is True
+    assert service.apply_whatsapp_status(_status(out["message_id"], "read"), store) is True
+    decision = RoutingDecision(summary="s", reply_channel=Channel.WHATSAPP, reply_text="hi")
+    _run(store, rec, _msg(Channel.WHATSAPP, "hello", "wamid.1"), decision)
     assert store.get(PHONE).turns[0].status == "read"
 
 
-def test_status_for_unknown_message_is_ignored(store):
-    status = {"conversation_id": PHONE, "provider_message_id": "wamid.none",
-              "status": "failed", "errors": [{"code": 131047}]}
-    assert service.apply_whatsapp_status(status, store) is False
+def test_late_delivered_does_not_replace_read(store):
+    # Meta sent "read" before "delivered" on 25 Nov 2026.
+    for status, recorded in (("accepted", True), ("sent", True), ("read", True), ("delivered", False)):
+        assert service.apply_whatsapp_status(_status("aws-1", status), store) is recorded
+    assert store.delivery_status("aws-1") == "read"
+
+
+def test_status_arriving_mid_reply_does_not_conflict_with_the_reply(store, rec):
+    """A conflict here would make Lambda retry the event and send the reply twice."""
+    out = service.start_conversation(PHONE, store, channel=Channel.WHATSAPP, template="demo_request",
+                                     send=rec.send, send_template=rec.send_template)
+
+    def route(*_):
+        service.apply_whatsapp_status(_status(out["message_id"], "read"), store)
+        return RoutingDecision(summary="s", reply_channel=Channel.WHATSAPP, reply_text="hi")
+
+    result = service.handle_inbound(_msg(Channel.WHATSAPP, "hello", "wamid.1"), store, route=route,
+                                    send=rec.send, now=NOW)
+    assert result["status"] == "open"
+    assert len(rec.sent) == 2
+
+
+def test_delivery_records_hold_no_conversation_or_phone(store):
+    service.apply_whatsapp_status(_status("aws-1", "sent"), store)
+    [item] = store._table.scan()["Items"]
+    assert set(item) == {"conversation_id", "status", "rank", "expires_at"}
+    assert item["conversation_id"] == "delivery#aws-1"
 
 
 def test_status_is_logged_without_phone_number(store, caplog):
-    status = {"conversation_id": PHONE, "provider_message_id": "wamid.x",
-              "status": "failed", "errors": [{"code": 131047}]}
     with caplog.at_level("INFO", logger="omnidamus.service"):
-        service.apply_whatsapp_status(status, store)
-    [line] = [r.getMessage() for r in caplog.records if "whatsapp_status" in r.getMessage()]
-    assert '"meta_message_id": "wamid.x"' in line and "131047" in line
-    assert PHONE not in line
+        service.apply_whatsapp_status(
+            _status("wamid.HBgLMTU1NTAwMDExMTE", "failed", [{"code": 131047, "message": f"to {PHONE}"}]), store)
+    assert "131047" in caplog.text and "failed" in caplog.text
+    assert "HBgLMTU1NTAwMDExMTE" not in caplog.text and PHONE.lstrip("+") not in caplog.text

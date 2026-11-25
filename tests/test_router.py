@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from omnidamus import router
 from omnidamus.router import dispatch_handoff, dispatch_reply
 from omnidamus.schema import Channel, RoutingDecision
 
@@ -34,12 +35,14 @@ def test_dispatch_reply_routes_to_whatsapp():
 
 def test_dispatch_reply_routes_to_email():
     decision = RoutingDecision(
-        summary="Receipt", reply_channel=Channel.EMAIL, reply_text="Confirmed."
+        summary="Internal note", reply_channel=Channel.EMAIL, reply_text="Confirmed."
     )
     with patch("omnidamus.router.ses_email.send_email", return_value="ses-1") as mock_send:
         message_id = dispatch_reply("to@example.com", decision)
     assert message_id == "ses-1"
-    mock_send.assert_called_once_with("to@example.com", subject="Receipt", body_text="Confirmed.")
+    # The summary is the agent's internal note and never reaches the customer.
+    mock_send.assert_called_once_with("to@example.com", subject=router.EMAIL_SUBJECT,
+                                      body_text="Confirmed.")
 
 
 def test_dispatch_handoff_returns_none_when_no_handoff():

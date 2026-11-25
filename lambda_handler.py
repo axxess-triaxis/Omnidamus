@@ -25,11 +25,15 @@ import logging
 import os
 
 from omnidamus import inbound, service, sns_verify
-from omnidamus.schema import Channel
+from omnidamus.redact import error_outline
+from omnidamus.schema import Channel, InvalidRequest
 from omnidamus.service import StartRefused
 from omnidamus.state import ConversationStore
 
 logging.getLogger().setLevel(logging.INFO)
+# Strands logs the model's raw text when its output does not parse. What went wrong still
+# reaches the log through HandlerError.
+logging.getLogger("strands").setLevel(logging.CRITICAL)
 log = logging.getLogger(__name__)
 
 _store: ConversationStore | None = None
@@ -139,7 +143,22 @@ def _handle_http(event: dict) -> dict:
     return _http(202, {"status": "started", "message_id": result["message_id"]})
 
 
+class HandlerError(RuntimeError):
+    """What leaves the handler in place of any unhandled error. Lambda writes it to the log, so
+    it carries no customer data. It still fails the invocation: retries, the dead-letter queue
+    and the alarms work as before."""
+
+
 def handler(event: dict, context=None) -> dict:
+    try:
+        return _handle(event)
+    except Exception as exc:  # noqa: BLE001 -- re-raised below, masked
+        outline = error_outline(exc)
+    # Outside the except block, so the original is not chained to it.
+    raise HandlerError(json.dumps(outline))
+
+
+def _handle(event: dict) -> dict:
     if isinstance(event.get("requestContext"), dict) and "http" in event["requestContext"]:
         return _handle_http(event)
     if event.get("action") == "start_conversation":
@@ -162,7 +181,7 @@ def handler(event: dict, context=None) -> dict:
 
     records = [r for r in event.get("Records", []) if r.get("EventSource") == "aws:sns"]
     if not records:
-        raise ValueError("Unrecognized event")
+        raise InvalidRequest("Unrecognized event")
 
     results = []
     for record in records:

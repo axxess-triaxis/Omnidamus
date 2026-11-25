@@ -35,7 +35,7 @@ same channel, hand off to a different one, or close out the conversation.
 
 Built fresh for this hackathon (no code shared with any other project).
 
-**Built and covered by tests (89 passing, no AWS account needed to run them; CI runs
+**Built and covered by tests (172 passing, no AWS account needed to run them; CI runs
 them and `cfn-lint` on every PR):**
 
 - **Three two-way channels in one conversation.** SMS/RCS, WhatsApp and email all
@@ -58,8 +58,8 @@ them and `cfn-lint` on every PR):**
   - SNS redeliveries are dropped
   - WhatsApp delivery receipts are stored by message ID and shown on the matching
     message
-  - the closing receipt goes out by SES once per completed exchange, with Reply-To
-    set so the customer can answer by email
+  - the closing receipt goes out by SES when the exchange completes, and again only if a
+    detail or the email address changed, with Reply-To set so the customer can answer by email
   - a completed exchange is published to STILL, the Triaxis cross-product event bus,
     as `triaxis.omnidamus` / `conversation.completed.v1`. It is published after the
     save, at most once per closing message, and never blocks the reply. STILL turns it
@@ -108,6 +108,11 @@ arrived in the customer's inbox; STOP and START changed the opt-out flag.
   message IDs contained the customer's phone number. Receipt recording and clean logs
   were checked live; START while already subscribed was checked on staging only; the
   receipt email and the email-only fix have unit tests only. Log entries from before the deploy are unchanged.
+- **Fixed in code and tests, not deployed:** a question after a closed conversation could
+  send the same receipt again; email replies other than receipts used the agent's internal
+  summary as the subject; an unhandled error, or agent output that did not parse, could put
+  a phone number or message text in the log. The live stack behaves the old way until it
+  is redeployed.
 - **No booking system.** "Confirmed" means the time is recorded in the conversation
   and the receipt; no calendar entry is created.
 - The agent's prompt has not been tuned against real conversations. The demo video

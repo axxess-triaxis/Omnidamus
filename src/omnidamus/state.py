@@ -57,6 +57,8 @@ class ConversationState(BaseModel):
     processed_message_ids: list[str] = Field(default_factory=list)
     last_whatsapp_inbound_at: datetime | None = None
     receipt_message_id: str | None = None
+    # What the last receipt said: its facts, plus the address it went to as "email".
+    receipt_facts: dict[str, str] | None = None
     opted_out: bool = False
     # Set when AXXESS started this conversation for an organization (2026-11-20). None for
     # Triaxis's own (Tenant 0) conversations, which keep the phone-number key.

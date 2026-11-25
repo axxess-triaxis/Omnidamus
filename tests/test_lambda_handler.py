@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 import lambda_handler
+from omnidamus.channels.whatsapp_social import WhatsAppSendError
+from omnidamus.inbound import normalize_phone
+from omnidamus.schema import RoutingDecision
 from omnidamus.sns_verify import SnsVerificationError
 
 WA_TOPIC = "arn:aws:sns:us-east-1:123456789012:omnidamus-whatsapp-inbound"
@@ -50,8 +55,72 @@ def test_start_conversation_action():
 
 
 def test_unrecognized_event_raises():
-    with pytest.raises(ValueError):
+    with pytest.raises(lambda_handler.HandlerError, match="Unrecognized event"):
         lambda_handler.handler({"hello": "world"})
+
+
+SECRETS = ("919800000000", "98000 00000", "c@example.com", "wamid.SECRET", "my private words")
+
+
+def _client_error(message):
+    return ClientError({"Error": {"Code": "ValidationException", "Message": message}}, "SendWhatsAppMessage")
+
+
+def _send_error():
+    try:
+        raise _client_error("to +919800000000 (+91 98000 00000) c@example.com wamid.SECRET")
+    except ClientError as exc:
+        raise WhatsAppSendError(f"send_whatsapp_message failed: {exc}") from exc
+
+
+def _model_error():
+    RoutingDecision.model_validate({"reply_text": "my private words", "reply_channel": "c@example.com"})
+
+
+def _bare_client_error():
+    raise _client_error("my private words")
+
+
+def _key_error():
+    raise KeyError("my private words")
+
+
+@pytest.mark.parametrize("fail, kind", [
+    (_send_error, "WhatsAppSendError"),
+    (_model_error, "ValidationError"),
+    (_bare_client_error, "ClientError"),
+    (_key_error, "KeyError"),
+])
+def test_unhandled_errors_reach_the_log_without_customer_data(fail, kind, caplog):
+    sms = {"originationNumber": "+14255550182", "messageBody": "hi", "inboundMessageId": "m1"}
+    with patch("omnidamus.sns_verify.verify"), \
+         patch("omnidamus.service.handle_inbound", side_effect=lambda *_: fail()), \
+         caplog.at_level("INFO"), pytest.raises(lambda_handler.HandlerError) as raised:
+        lambda_handler.handler({"Records": [_record(SMS_TOPIC, sms)]})
+    # Lambda logs the message of whatever leaves the handler, so nothing may be chained to it.
+    assert raised.value.__cause__ is None and raised.value.__context__ is None
+    seen = caplog.text + str(raised.value)
+    assert kind in seen and "test_lambda_handler.py" in seen
+    for secret in SECRETS:
+        assert secret not in seen
+
+
+def test_send_errors_keep_the_reason_aws_gave():
+    with patch("omnidamus.service.start_conversation", side_effect=lambda **_: _send_error()), \
+         pytest.raises(lambda_handler.HandlerError, match="ValidationException"):
+        lambda_handler.handler({"action": "start_conversation", "phone": "+14255550182",
+                                "notification": "x"})
+
+
+def test_agent_library_logs_are_off():
+    # Strands logs the model's raw text when its output does not parse.
+    assert not logging.getLogger("strands.event_loop.streaming").isEnabledFor(logging.ERROR)
+
+
+def test_bad_phone_error_does_not_repeat_the_input():
+    with pytest.raises(ValueError) as raised:
+        normalize_phone("my private words")
+    assert "private" not in str(raised.value)
 
 
 EMAIL_TOPIC = "arn:aws:sns:us-east-1:123456789012:omnidamus-email-inbound"

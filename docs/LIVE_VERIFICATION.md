@@ -199,8 +199,9 @@ verified, and `+91XXXXXX9963` is opted in.
    code, not checked live.
 5. **START while already opted in goes to the agent.** On 28 Oct 09:35 it produced a
    confirmation and a third receipt (SES `010801a180aef759-945bb0d5-3872-4027-ba9e-1736f9aa4fc2-000000`).
-   START no longer reaches the agent (checked on staging). "Receipt exactly once" still
-   holds per completion, not per conversation.
+   START no longer reaches the agent (checked on staging). "Receipt exactly once" held
+   per completion, not per conversation. Fixed in code, not deployed: a later completion
+   sends a receipt only if a detail or the email address changed.
 6. **Dead-letter queue.** Cleared by itself: on 25 Nov 19:49 the queue was empty and both
    alarms were OK. The failed 27 Oct 16:49 event was not removed by hand.
 7. **Logged Meta message IDs contain the customer's phone number.** A `wamid` is base64
@@ -208,6 +209,11 @@ verified, and `+91XXXXXX9963` is opted in.
    added on 27 Oct puts phone numbers in CloudWatch in recoverable form, although the
    tests check that none appear in plain text. Fixed for new entries; entries from
    before 25 Nov 19:48 are unchanged.
+8. **Unhandled errors could be logged with customer data.** The message of a failed send,
+   and Strands' own log of agent output that does not parse, were written as they were.
+   Found by reading the code, not seen in the log. Fixed in code, not deployed.
+9. **Email replies other than receipts used the agent's internal summary as the subject.**
+   Found by reading the code; no such reply has been sent live. Fixed in code, not deployed.
 
 ## Fixes deployed 25 Nov
 

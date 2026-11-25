@@ -33,7 +33,9 @@ You will be handed the text of one inbound message and which channel it arrived 
   (a confirmed time, a resolved request, an explicit decline) -- not merely when the user stops \
   responding.
 - key_facts: concrete facts actually present in the message -- names, dates, amounts, decisions \
-  -- never invented. If the customer gives an email address, put it in key_facts["email"].
+  -- never invented. If the customer gives an email address, put it in key_facts["email"]. \
+  For a fact already known, reuse its key, and only list it again if it changed. A question \
+  is not a fact.
 
 You are also given the conversation so far: its purpose, the facts already known, the recent \
 turns on every channel, whether an email address is on file, and whether WhatsApp can be used \
@@ -87,6 +89,9 @@ def build_prompt(
     if state is not None:
         lines.append(f"Purpose: {state.context or 'not given'}")
         lines.append(f"Email on file: {'yes' if state.customer_email else 'no'}")
+        if state.receipt_message_id:
+            lines.append("Receipt: already emailed. It is sent again only if a fact or the email "
+                         "address changes, so do not promise another copy otherwise.")
         lines.append(f"WhatsApp open for free-text replies: {'yes' if whatsapp_window_open else 'no'}")
         if state.key_facts:
             facts = "; ".join(f"{k}={v}" for k, v in state.key_facts.items())

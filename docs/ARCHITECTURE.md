@@ -55,7 +55,8 @@ flowchart LR
    move to WhatsApp outside its 24-hour window becomes an approved template, or a
    click-to-chat link on the current channel.
 4. When the agent marks the conversation complete, the closing receipt goes out by
-   **Amazon SES**, once, to the address on file. Its Reply-To is the SES receiving
+   **Amazon SES** to the address on file, and again later only if a detail or the
+   address changed. Its Reply-To is the SES receiving
    address, so if the customer answers it, the reply comes back through
    **SES receiving** into the same conversation.
 

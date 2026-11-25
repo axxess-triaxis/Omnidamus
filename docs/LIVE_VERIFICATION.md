@@ -14,13 +14,14 @@ the customer's WhatsApp number is `+91XXXXXX7374`, the receipt mailbox is
 | Conversation opened with an approved WhatsApp template | Done, delivered | [27 Oct 16:23](#conversation-27-oct) |
 | Two-way WhatsApp chat with the agent (Nova Pro) | Done, delivered until 27 Oct 16:49 | [27 Oct 16:48-16:49](#conversation-27-oct) |
 | Conversation closes, SES receipt arrives | Done (after an IAM fix) | [Receipt](#closing-receipt) |
-| STOP / START | Opt-out and opt-in recorded; confirmation replies **not delivered** | [STOP and START](#stop-and-start) |
+| STOP / START | Opt-out and opt-in recorded; STOP confirmation delivered and read 25 Nov; START confirmation **not delivered yet** | [STOP and START](#stop-and-start) |
 | Customer replies by email | **Not done** | [Not verified](#not-verified) |
 | SMS | **Not done** (optional; Indian SMS needs DLT registration) | [Not verified](#not-verified) |
 
-Since 27 Oct 21:58, Meta has refused every outbound WhatsApp message with error
-**131037** ("WhatsApp provided number needs display name approval before message can be
-sent"). See [Open issues](#open-issues).
+From 27 Oct 21:58, Meta refused outbound WhatsApp messages with error **131037**
+("WhatsApp provided number needs display name approval before message can be sent").
+The last failure recorded here is 28 Oct 15:12; a message was delivered and read on
+29 Oct, and the STOP confirmation on 25 Nov. See [Open issues](#open-issues).
 
 ## Deployment
 
@@ -139,6 +140,20 @@ status for the 28 Oct messages (logged after adding delivery-status logging on 2
 
 The customer's number is **opted in** as of 28 Oct 15:12:11.
 
+### 25 Nov re-check
+
+The messages came from a second phone, `+91XXXXXX9963`, so this was a new conversation.
+They reached AWS at 15:28, START first. Statuses are from CloudWatch (all `errors: []`):
+
+| Time | In | Reply | Reply ID | Statuses |
+|---|---|---|---|---|
+| 15:28:34 | START | "Hello! How can I assist you today?" (from the agent) | `ab09d644-8c3f-40d4-8504-a8ec908d58c5` | accepted, sent, delivered, read |
+| 15:28:43 | STOP | "You won't hear from us again. Reply START if you change your mind." | `00ede2a7-a614-4e80-a464-268cc5cd2bef` | accepted, sent, delivered, read |
+
+The STOP confirmation is verified. The START confirmation ("You're subscribed again") is
+not: that phone was not opted out when its START arrived, so START went to the agent
+(open issue 5). `+91XXXXXX9963` is **opted out** as of 15:28:43.
+
 ## Not verified
 
 - **Customer replies by email.** SES receiving needs an MX record on a domain we control.
@@ -151,15 +166,20 @@ The customer's number is **opted in** as of 28 Oct 15:12:11.
 
 ## Open issues
 
-1. **Meta error 131037 (blocks all WhatsApp delivery since 27 Oct 21:58).** Both test
-   numbers had the display name "Sudipta Sarmah". On 28 Oct the founder submitted
-   "Triaxis Ventures" with a business profile in WhatsApp Manager. Meta sent a
-   `phone_number_name_update` event at 10:29:27, but WhatsApp Manager still showed the
-   review as pending later that day, and the 15:12 reply still failed with 131037.
-   Review time is Meta's.
+1. **Meta error 131037 (WhatsApp delivery, 27 Oct 21:58 to 28 Oct 15:12 at least).**
+   Cleared by 29 Oct. Both test numbers had the display name "Sudipta Sarmah". On 28 Oct
+   the founder submitted "Triaxis Ventures" with a business profile in WhatsApp Manager.
+   Meta sent a `phone_number_name_update` event at 10:29:27 (its values were not logged),
+   but the 15:12 reply still failed with 131037. On 29 Oct 18:14 (12:44 UTC) an outbound
+   message went accepted, sent, delivered and read with `errors: []`, as recorded from
+   CloudWatch on 20 Nov in [#7](https://github.com/axxess-triaxis/Omnidamus/pull/7).
+   DynamoDB, read on 25 Nov, shows that turn (`a57e227d-e77b-4e7a-ae63-8e0d463042fc`).
+   On 25 Nov both replies were delivered and read. Still open: a START confirmation sent
+   after a STOP.
 2. **Delivery receipts are never recorded.** Receipts are matched on Meta's message ID,
    but turns store AWS's message ID. Status events carry AWS's ID in the top-level
-   `messageId`, and failed statuses have no Meta ID at all. Not fixed.
+   `messageId`, and failed statuses have no Meta ID at all. Seen again on 25 Nov: all
+   eight statuses logged `matched_turn: false`. Not fixed.
 3. **Receipt subject and first line are the agent's internal summary.** For example:
    "Confirmation: Remind the customer of the confirmed demo time and close the
    conversation with an email receipt."
@@ -171,6 +191,11 @@ The customer's number is **opted in** as of 28 Oct 15:12:11.
    "Receipt exactly once" holds per completion, not per conversation.
 6. **Dead-letter queue.** The failed 27 Oct 16:49 event is still in the queue, and
    `FailedInvocationsAlarm` is still in ALARM.
+
+7. **Logged Meta message IDs contain the customer's phone number.** A `wamid` is base64
+   and decodes to a value that includes the recipient's number, so the status logging
+   added on 27 Oct puts phone numbers in CloudWatch in recoverable form, although the
+   tests check that none appear in plain text. Not fixed.
 
 ## Code changes made during verification
 

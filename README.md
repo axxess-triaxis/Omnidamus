@@ -234,3 +234,6 @@ also states that every product except AXXESS TRIaxis was built at zero increment
 *Both are founder-stated, source artifact needed.* The known running costs are small and paid
 from AWS credits: STILL is estimated at under USD 2 a month, Omnidamus keeps a Route 53 zone at
 USD 0.50 a month, and Amazon Bedrock tokens are billed per use.
+
+<!-- readme-activity:start (generated; edits here are overwritten) -->
+<!-- readme-activity:end -->

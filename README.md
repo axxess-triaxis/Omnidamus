@@ -94,8 +94,8 @@ arrived in the customer's inbox; STOP and START changed the opt-out flag.
   Meta's `phone_number_name_update` decision reached the function on 28 Oct, and on
   29 Oct 12:44 UTC an outbound message went accepted, sent, delivered and read with no
   errors (CloudWatch `/aws/lambda/omnidamus-OmnidamusFunction-*`, ap-southeast-2).
-  The STOP confirmation was delivered and read on 25 Nov. The START confirmation sent
-  after a STOP has not been checked on a phone.
+  The STOP confirmation, and the START confirmation sent after a STOP, were delivered
+  and read on 25 Nov.
 - **Email replies from the customer.** SES receiving is not set up: the domain's DNS
   host would not take the MX record, so the stack runs without `InboundEmailAddress`.
 - **SMS/RCS.** No number; Indian SMS needs DLT registration.
@@ -106,8 +106,8 @@ arrived in the customer's inbox; STOP and START changed the opt-out flag.
   a question after a closed conversation could be answered by email only; START while
   already subscribed went to the agent and could send another receipt; logged Meta
   message IDs contained the customer's phone number. Receipt recording and clean logs
-  were checked live; START was checked on staging only; the receipt email and the
-  email-only fix have unit tests only. Log entries from before the deploy are unchanged.
+  were checked live; START while already subscribed was checked on staging only; the
+  receipt email and the email-only fix have unit tests only. Log entries from before the deploy are unchanged.
 - **No booking system.** "Confirmed" means the time is recorded in the conversation
   and the receipt; no calendar entry is created.
 - The agent's prompt has not been tuned against real conversations. The demo video

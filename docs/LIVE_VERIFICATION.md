@@ -200,8 +200,9 @@ verified, and `+91XXXXXX9963` is opted in.
 5. **START while already opted in goes to the agent.** On 28 Oct 09:35 it produced a
    confirmation and a third receipt (SES `010801a180aef759-945bb0d5-3872-4027-ba9e-1736f9aa4fc2-000000`).
    START no longer reaches the agent (checked on staging). "Receipt exactly once" held
-   per completion, not per conversation. Fixed in code, not deployed: a later completion
-   sends a receipt only if a detail or the email address changed.
+   per completion, not per conversation. Fixed on staging, not on production: a later
+   completion sends a receipt only if a detail or the email address changed. See
+   [Receipt and error-log fixes, staging](#receipt-and-error-log-fixes-staging).
 6. **Dead-letter queue.** Cleared by itself: on 25 Nov 19:49 the queue was empty and both
    alarms were OK. The failed 27 Oct 16:49 event was not removed by hand.
 7. **Logged Meta message IDs contain the customer's phone number.** A `wamid` is base64
@@ -211,9 +212,10 @@ verified, and `+91XXXXXX9963` is opted in.
    before 25 Nov 19:48 are unchanged.
 8. **Unhandled errors could be logged with customer data.** The message of a failed send,
    and Strands' own log of agent output that does not parse, were written as they were.
-   Found by reading the code, not seen in the log. Fixed in code, not deployed.
+   Found by reading the code, not seen in the log. Fixed on staging, not on production.
 9. **Email replies other than receipts used the agent's internal summary as the subject.**
-   Found by reading the code; no such reply has been sent live. Fixed in code, not deployed.
+   Found by reading the code; no such reply is recorded here. Fixed in the code on staging,
+   not checked live.
 
 ## Fixes deployed 25 Nov
 
@@ -237,6 +239,38 @@ changed only the function's code. Roll back to
 
 Not checked live: the receipt email's subject, the email-only fix, and START while already
 subscribed (staging only).
+
+## Receipt and error-log fixes, staging
+
+[#15](https://github.com/axxess-triaxis/Omnidamus/pull/15), commit `4ef3609`, image
+`sha256:0c372bce867e3b3a92d710a23597b1e0c01a49e9f7ce69f8bb06d90bcb5b099d`, on
+`omnidamus-staging` since 25 Nov 20:42. The change set changed only the function's code and
+no parameter. Roll back to
+`sha256:1fc8dd438d0a0d22dbf8b579e3df03eed4ed700feee1cde90dfe0b3b79e30541`. **Production still
+runs `54ac872`.**
+
+The messages went through the staging WhatsApp topic from a made-up number, with the real
+Nova Pro model and sending captured. The agent closed the conversation on all four:
+
+| Message | WhatsApp reply | Receipts so far |
+|---|---|---|
+| Books 6 pm, gives an email address | Confirmation | 1 |
+| "What time is my demo?" | Friday 4 December at 6 pm IST | 1 |
+| "Please move the demo to 7 pm IST" | Moved to 7 pm IST | 2 |
+| "Thanks, what time was it again?" | 7 pm IST | 2 |
+
+| Check (IST) | Result |
+|---|---|
+| 20:45: STOP, START, START | Opt-out confirmation; "You're subscribed again. How can we help?"; "You're subscribed. How can we help?" |
+| 20:45: direct call with a phone value that is not a number | `HandlerError` with type and code location; the value given is not in the log |
+| That error's alarm | Fired 20:46, cleared itself 20:51 |
+| 55 log events searched for the test number, raw `wamid`, email address, name and message text | None found |
+| `/start` with no key and a wrong key | 401 and 401 |
+| 20:46-20:57: AXXESS cross-product test, run [45643242874](https://github.com/axxess-triaxis/AXXESSTRIAXIS/actions/runs/45643242874) | 7 of 7 passed |
+
+Not checked on staging: a failed send (sending is captured there), agent output that does not
+parse, and the subject of an email reply. In the last reply the agent repeated that a receipt
+"has been sent", which is true of the earlier one.
 
 ## Code changes made during verification
 

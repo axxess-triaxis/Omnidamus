@@ -179,23 +179,46 @@ not: that phone was not opted out when its START arrived, so START went to the a
 2. **Delivery receipts are never recorded.** Receipts are matched on Meta's message ID,
    but turns store AWS's message ID. Status events carry AWS's ID in the top-level
    `messageId`, and failed statuses have no Meta ID at all. Seen again on 25 Nov: all
-   eight statuses logged `matched_turn: false`. Not fixed.
+   eight statuses logged `matched_turn: false`. Fixed, see
+   [Fixes deployed 25 Nov](#fixes-deployed-25-nov).
 3. **Receipt subject and first line are the agent's internal summary.** For example:
    "Confirmation: Remind the customer of the confirmed demo time and close the
-   conversation with an email receipt."
+   conversation with an email receipt." Fixed in code, not checked live.
 4. **A question can be answered by email only.** On 28 Oct 09:34, "What time is my demo?"
    got a second receipt (SES `010801a180ae602a-d1e5a3e7-6998-463d-a05d-ad1f076d281f-000000`)
-   and no WhatsApp reply, because the agent closed the conversation again.
+   and no WhatsApp reply, because the agent closed the conversation again. Fixed in
+   code, not checked live.
 5. **START while already opted in goes to the agent.** On 28 Oct 09:35 it produced a
    confirmation and a third receipt (SES `010801a180aef759-945bb0d5-3872-4027-ba9e-1736f9aa4fc2-000000`).
-   "Receipt exactly once" holds per completion, not per conversation.
-6. **Dead-letter queue.** The failed 27 Oct 16:49 event is still in the queue, and
-   `FailedInvocationsAlarm` is still in ALARM.
-
+   START no longer reaches the agent (checked on staging). "Receipt exactly once" still
+   holds per completion, not per conversation.
+6. **Dead-letter queue.** Cleared by itself: on 25 Nov 19:49 the queue was empty and both
+   alarms were OK. The failed 27 Oct 16:49 event was not removed by hand.
 7. **Logged Meta message IDs contain the customer's phone number.** A `wamid` is base64
    and decodes to a value that includes the recipient's number, so the status logging
    added on 27 Oct puts phone numbers in CloudWatch in recoverable form, although the
-   tests check that none appear in plain text. Not fixed.
+   tests check that none appear in plain text. Fixed for new entries; entries from
+   before 25 Nov 19:48 are unchanged.
+
+## Fixes deployed 25 Nov
+
+[#12](https://github.com/axxess-triaxis/Omnidamus/pull/12), commit `54ac872`, image
+`sha256:1fc8dd438d0a0d22dbf8b579e3df03eed4ed700feee1cde90dfe0b3b79e30541`. The change set
+changed only the function's code. Roll back to
+`sha256:7535492c2089180fee1b947fd00d4c1345a4fa8251edcce15b41691504d65898`.
+
+| Where | Check | Result |
+|---|---|---|
+| Staging, 16:43 | START from a new number, STOP, START (replies captured, not sent) | Fixed reply; opt-out confirmation; "You're subscribed again. How can we help?" |
+| Staging, 16:43 | Synthetic sent, read, then delivered; and a failed status with no Meta ID | `read` kept, shown on the turn; `failed` recorded |
+| Staging, 16:43 | 42 log events searched for the test number, the raw `wamid` and agent text | None found |
+| Staging, 16:44-16:55 | AXXESS cross-product test, run [45602536225](https://github.com/axxess-triaxis/AXXESSTRIAXIS/actions/runs/45602536225) | 7 of 7 passed |
+| Production, 19:48 | Stack `omnidamus` `UPDATE_COMPLETE` (19:47:59); `/start` with no key and a wrong key | 401 and 401 |
+| Production, 19:48 | Synthetic receipt, sent to no one | Recorded; 16 log events with no number, raw `wamid` or error |
+| Production | A real WhatsApp message answered by the new code | **Not verified**: none had reached AWS by 20:03 |
+
+The founder reported on 25 Nov that START and STOP were answered at once. The wording
+matches the 15:28 replies above, which the old code sent.
 
 ## Code changes made during verification
 
